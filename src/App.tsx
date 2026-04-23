@@ -217,7 +217,7 @@ export default function App() {
       return (
         <div className="flex flex-col items-center justify-center h-full text-slate-600 italic py-10 opacity-40">
           <BookOpen size={48} className="mb-4" />
-          <p>{onlyActive ? "点击左侧题目查看脚本" : "暂无分段脚本内容"}</p>
+          <p>{onlyActive ? "点击播放题目查看内容" : "暂无分段内容"}</p>
         </div>
       );
     }
@@ -226,9 +226,15 @@ export default function App() {
       <div className={cn("flex flex-col w-full", onlyActive ? "gap-4" : "gap-12 py-10")}>
         {items.map((item, idx) => {
           const isActive = onlyActive ? true : item.index === activeSegmentIndex;
-          const words = item.text.split(/\s+/);
+          // Preserve line breaks by splitting by newline first
+          const lines = item.text.split('\n');
           const duration = item.endTime - item.startTime;
           
+          // Calculate cumulative word count for highlighting across lines if needed
+          // But for simplicity, we can just highlight based on time relative to this segment
+          const totalWords = item.text.split(/\s+/).filter(Boolean).length;
+          let currentWordGlobalIdx = 0;
+
           return (
             <motion.div 
               key={item.index}
@@ -240,38 +246,46 @@ export default function App() {
               }}
               transition={{ type: 'spring', stiffness: 200, damping: 25 }}
               className={cn(
-                "w-full text-left transition-all duration-500",
+                "w-full text-left transition-all duration-500 whitespace-pre-wrap",
                 onlyActive ? "px-0" : "px-0 py-2",
                 isActive ? "text-white" : "text-slate-500"
               )}
             >
-              <div className="flex flex-wrap gap-x-2 gap-y-1.5">
-                {words.map((word, wIdx) => {
-                  let isWordActive = false;
-                  if (isActive && duration > 0) {
-                    const elapsed = currentTime - item.startTime;
-                    const wordTime = (elapsed / duration) * words.length;
-                    isWordActive = wIdx <= wordTime;
-                  }
-                  
-                  return (
-                    <motion.span
-                      key={wIdx}
-                      initial={false}
-                      animate={{
-                        color: isActive && isWordActive ? '#60a5fa' : 'inherit',
-                        scale: isActive && isWordActive ? 1.05 : 1,
-                      }}
-                      className={cn(
-                        "text-base md:text-lg font-medium",
-                        isActive && isWordActive ? "font-bold" : ""
-                      )}
-                    >
-                      {word}
-                    </motion.span>
-                  );
-                })}
-              </div>
+              {lines.map((line, lIdx) => {
+                const words = line.split(/(\s+)/); // Keep the spaces to maintain formatting
+                return (
+                  <div key={lIdx} className="flex flex-wrap">
+                    {words.map((word, wIdx) => {
+                      if (word.trim() === '') return <span key={wIdx}>{word}</span>;
+                      
+                      const wordIdxInLine = currentWordGlobalIdx++;
+                      let isWordActive = false;
+                      if (isActive && duration > 0 && totalWords > 0) {
+                        const elapsed = currentTime - item.startTime;
+                        const wordProgress = (elapsed / duration) * totalWords;
+                        isWordActive = wordIdxInLine <= wordProgress;
+                      }
+
+                      return (
+                        <motion.span
+                          key={wIdx}
+                          initial={false}
+                          animate={{
+                            color: isActive && isWordActive ? '#60a5fa' : 'inherit',
+                            scale: isActive && isWordActive ? 1.05 : 1,
+                          }}
+                          className={cn(
+                            "text-base md:text-lg font-medium inline-block",
+                            isActive && isWordActive ? "font-bold" : ""
+                          )}
+                        >
+                          {word}
+                        </motion.span>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </motion.div>
           );
         })}
@@ -398,15 +412,15 @@ export default function App() {
                     <button 
                       onClick={() => {
                         setMaterial({
-                          title: '餐厅点餐英语对话',
+                          title: 'Daily Life: Ordering at a Coffee Shop',
                           audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-                          script: `### ESL Conversations: Ordering in a Restaurant\n\n[00:00] **Waiter**: Good evening! Welcome to The Green Bistro. Do you have a reservation?\n**Guest**: Yes, we do. It's under the name "Smith" for two people.\n**Waiter**: Ah, yes. Mr. Smith. Follow me, please. Here is your table by the window.\n\n[00:10] **Waiter**: Would you like to start with some drinks while you look at the menu?\n**Guest**: I'll have a glass of sparkling water with lemon, please.\n**Friend**: And I'll take a fresh orange juice.\n\n[00:20] **Waiter**: Excellent choice. I'll be back in a moment with your drinks.\n(A few minutes later...)\n**Waiter**: Are you ready to order now? Or do you need a few more minutes?\n\n[00:30] **Guest**: I think we're ready. To start, I'd like the creamy mushroom soup.\n**Friend**: And for me, the Caesar salad, please.\n\n[00:40] **Waiter**: And for the main course?\n**Guest**: I will go with the grilled salmon served with asparagus.\n**Friend**: I'd like the vegetable lasagna, please.`,
+                          script: `### English Dialogue: At the Coffee Shop\n\n[00:00] **Barista**: Next in line, please! Hi there, what can I get started for you today?\n**Customer**: Hi! Can I get a large iced latte, please?\n**Barista**: Sure thing. Would you like any flavor in that? We have vanilla, caramel, and hazelnut.\n\n[00:10] **Customer**: Hmm, I'll go with caramel. And could I have that with oat milk instead of whole milk?\n**Barista**: You got it. One large iced caramel latte with oat milk. Anything else for you?\n\n[00:20] **Customer**: Actually, yes. Do you have any of those blueberry muffins left?\n**Barista**: Let me check... Yes, we have two left! Would you like me to warm one up for you?\n\n[00:30] **Customer**: That sounds perfect, thank you. How much will that be?\n**Barista**: That'll be $8.50 altogether. You can tap your card right here whenever you're ready.\n\n[00:40] **Customer**: Here you go. Thanks!\n**Barista**: Great, thanks. Your drink will be ready at the end of the counter in just a few minutes. Have a great day!\n**Customer**: You too!`,
                           segments: [
-                            { id: '1', label: '题目 1', startTime: 0, endTime: 10, subtitle: '**Waiter**: Good evening! Welcome to The Green Bistro. Do you have a reservation?\n**Guest**: Yes, we do. It\'s under the name "Smith" for two people.\n**Waiter**: Ah, yes. Mr. Smith. Follow me, please. Here is your table by the window.' },
-                            { id: '2', label: '题目 2', startTime: 10, endTime: 20, subtitle: '**Waiter**: Would you like to start with some drinks while you look at the menu?\n**Guest**: I\'ll have a glass of sparkling water with lemon, please.\n**Friend**: And I\'ll take a fresh orange juice.' },
-                            { id: '3', label: '题目 3', startTime: 20, endTime: 30, subtitle: '**Waiter**: Excellent choice. I\'ll be back in a moment with your drinks.\n(A few minutes later...)\n**Waiter**: Are you ready to order now? Or do you need a few more minutes?' },
-                            { id: '4', label: '题目 4', startTime: 30, endTime: 40, subtitle: '**Guest**: I think we\'re ready. To start, I\'d like the creamy mushroom soup.\n**Friend**: And for me, the Caesar salad, please.' },
-                            { id: '5', label: '题目 5', startTime: 40, endTime: 50, subtitle: '**Waiter**: And for the main course?\n**Guest**: I will go with the grilled salmon served with asparagus.\n**Friend**: I\'d like the vegetable lasagna, please.' },
+                            { id: '1', label: '题目 1: Ordering Drink', startTime: 0, endTime: 10, subtitle: '**Barista**: Next in line, please! Hi there, what can I get started for you today?\n**Customer**: Hi! Can I get a large iced latte, please?\n**Barista**: Sure thing. Would you like any flavor in that? We have vanilla, caramel, and hazelnut.' },
+                            { id: '2', label: '题目 2: Substitution', startTime: 10, endTime: 20, subtitle: '**Customer**: Hmm, I\'ll go with caramel. And could I have that with oat milk instead of whole milk?\n**Barista**: You got it. One large iced caramel latte with oat milk. Anything else for you?' },
+                            { id: '3', label: '题目 3: Adding Food', startTime: 20, endTime: 30, subtitle: '**Customer**: Actually, yes. Do you have any of those blueberry muffins left?\n**Barista**: Let me check... Yes, we have two left! Would you like me to warm one up for you?' },
+                            { id: '4', label: '题目 4: Payment', startTime: 30, endTime: 40, subtitle: '**Customer**: That sounds perfect, thank you. How much will that be?\n**Barista**: That\'ll be $8.50 altogether. You can tap your card right here whenever you\'re ready.' },
+                            { id: '5', label: '题目 5: Closing', startTime: 40, endTime: 55, subtitle: '**Customer**: Here you go. Thanks!\n**Barista**: Great, thanks. Your drink will be ready at the end of the counter in just a few minutes. Have a great day!\n**Customer**: You too!' },
                           ]
                         });
                         setMode('edit');
@@ -497,19 +511,19 @@ export default function App() {
 
                 <div className="glass p-6 rounded-[32px] space-y-6">
                   <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><BookOpen size={16} className="text-blue-400" /> 脚本预览</h3>
-                  <div className="bg-black/20 rounded-[20px] p-6 text-slate-400 max-h-[400px] overflow-y-auto custom-scrollbar border border-white/5">
-                    <div className="prose prose-invert prose-sm max-w-none prose-p:my-2">
-                       {renderTranscript()}
+                  <div className="bg-black/20 rounded-[20px] p-6 text-slate-400 h-[500px] overflow-y-auto custom-scrollbar border border-white/5">
+                    <div className="max-w-none">
+                       {renderTranscript(true)}
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Right: Segments Management */}
-              <div className="lg:col-span-8 space-y-6">
-                <div className="glass p-8 rounded-[32px] flex flex-col h-full max-h-[calc(100vh-200px)]">
+              <div className="lg:col-span-8 flex flex-col h-full min-h-[600px]">
+                <div className="glass p-8 rounded-[32px] flex flex-col flex-grow border-white/10">
                   <div className="flex items-center justify-between mb-8">
-                    <h3 className="font-bold text-white tracking-tight">题目分段</h3>
+                    <h3 className="font-bold text-white tracking-tight">题目分段管理</h3>
                     <div className="flex gap-2">
                       <button 
                         onClick={() => {

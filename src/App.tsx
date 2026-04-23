@@ -352,7 +352,7 @@ export default function App() {
               <div className="glass p-10 rounded-[32px] space-y-8">
                 <div className="space-y-2">
                   <h2 className="text-3xl font-bold text-white">开始新的听力任务</h2>
-                  <p className="text-slate-400 text-sm">上传音频文件并粘贴听力脚本。包含 [00:15] 格式标记可自动分段。</p>
+                  <p className="text-slate-400 text-sm">上传音频文件并粘贴听力脚本。</p>
                 </div>
 
                 <div className="space-y-6">
@@ -398,13 +398,15 @@ export default function App() {
                     <button 
                       onClick={() => {
                         setMaterial({
-                          title: '2023年高考英语听力模拟训练',
+                          title: '餐厅点餐英语对话',
                           audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-                          script: `### Section A\n\n[00:00] **Question 1**: What is the man going to do this afternoon?\n\n[00:15] **Question 2**: Where does this conversation probably take place?\n\n[00:30] **Question 3**: What is the most likely relationship between the speakers?\n\n---\n\n### Section B\n\n[00:45] Now listen to a conversation about environmental protection...`,
+                          script: `### ESL Conversations: Ordering in a Restaurant\n\n[00:00] **Waiter**: Good evening! Welcome to The Green Bistro. Do you have a reservation?\n**Guest**: Yes, we do. It's under the name "Smith" for two people.\n**Waiter**: Ah, yes. Mr. Smith. Follow me, please. Here is your table by the window.\n\n[00:10] **Waiter**: Would you like to start with some drinks while you look at the menu?\n**Guest**: I'll have a glass of sparkling water with lemon, please.\n**Friend**: And I'll take a fresh orange juice.\n\n[00:20] **Waiter**: Excellent choice. I'll be back in a moment with your drinks.\n(A few minutes later...)\n**Waiter**: Are you ready to order now? Or do you need a few more minutes?\n\n[00:30] **Guest**: I think we're ready. To start, I'd like the creamy mushroom soup.\n**Friend**: And for me, the Caesar salad, please.\n\n[00:40] **Waiter**: And for the main course?\n**Guest**: I will go with the grilled salmon served with asparagus.\n**Friend**: I'd like the vegetable lasagna, please.`,
                           segments: [
-                            { id: '1', label: '题目 1', startTime: 0, endTime: 15 },
-                            { id: '2', label: '题目 2', startTime: 15, endTime: 30 },
-                            { id: '3', label: '题目 3', startTime: 30, endTime: 45 },
+                            { id: '1', label: '题目 1', startTime: 0, endTime: 10, subtitle: '**Waiter**: Good evening! Welcome to The Green Bistro. Do you have a reservation?\n**Guest**: Yes, we do. It\'s under the name "Smith" for two people.\n**Waiter**: Ah, yes. Mr. Smith. Follow me, please. Here is your table by the window.' },
+                            { id: '2', label: '题目 2', startTime: 10, endTime: 20, subtitle: '**Waiter**: Would you like to start with some drinks while you look at the menu?\n**Guest**: I\'ll have a glass of sparkling water with lemon, please.\n**Friend**: And I\'ll take a fresh orange juice.' },
+                            { id: '3', label: '题目 3', startTime: 20, endTime: 30, subtitle: '**Waiter**: Excellent choice. I\'ll be back in a moment with your drinks.\n(A few minutes later...)\n**Waiter**: Are you ready to order now? Or do you need a few more minutes?' },
+                            { id: '4', label: '题目 4', startTime: 30, endTime: 40, subtitle: '**Guest**: I think we\'re ready. To start, I\'d like the creamy mushroom soup.\n**Friend**: And for me, the Caesar salad, please.' },
+                            { id: '5', label: '题目 5', startTime: 40, endTime: 50, subtitle: '**Waiter**: And for the main course?\n**Guest**: I will go with the grilled salmon served with asparagus.\n**Friend**: I\'d like the vegetable lasagna, please.' },
                           ]
                         });
                         setMode('edit');
@@ -428,7 +430,7 @@ export default function App() {
               className="grid grid-cols-1 lg:grid-cols-12 gap-8"
             >
               {/* Left: Player & Editor */}
-              <div className="lg:col-span-8 space-y-6">
+              <div className="lg:col-span-4 space-y-6">
                 <div className="glass p-6 rounded-[24px] space-y-6">
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><Clock size={16} className="text-blue-400" /> 播放控制</h3>
@@ -504,7 +506,7 @@ export default function App() {
               </div>
 
               {/* Right: Segments Management */}
-              <div className="lg:col-span-4 space-y-6">
+              <div className="lg:col-span-8 space-y-6">
                 <div className="glass p-8 rounded-[32px] flex flex-col h-full max-h-[calc(100vh-200px)]">
                   <div className="flex items-center justify-between mb-8">
                     <h3 className="font-bold text-white tracking-tight">题目分段</h3>
@@ -597,7 +599,7 @@ export default function App() {
                             newSegs[idx].subtitle = e.target.value;
                             setMaterial(p => ({ ...p, segments: newSegs }));
                           }}
-                          className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-xs text-slate-300 placeholder:text-slate-600 focus:border-blue-500/30 outline-none resize-none h-16"
+                          className="w-full bg-black/20 border border-white/5 rounded-lg p-4 text-sm text-slate-300 placeholder:text-slate-600 focus:border-blue-500/30 outline-none resize-none h-48"
                         />
                         <div className="flex items-center gap-4">
                           <div className="flex-grow grid grid-cols-2 gap-3 text-[10px] font-mono">

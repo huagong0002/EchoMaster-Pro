@@ -166,7 +166,7 @@ export default function App() {
       } else {
         const text = await res.text();
         console.error('Non-JSON response from server:', text);
-        throw new Error('服务器响应格式错误，请稍后重试。');
+        throw new Error(`服务器响应格式错误: ${text.substring(0, 50)}`);
       }
 
       if (!res.ok) throw new Error(data.error || '登录失败');

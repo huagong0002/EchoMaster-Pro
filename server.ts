@@ -80,16 +80,25 @@ async function startServer() {
 
   // 登录 (严格校验，不再允许自动注册)
   app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    const user = db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username) as any;
-    
-    if (!user || !bcrypt.compareSync(password, user.password)) {
-      return res.status(401).json({ error: '用户名或密码错误，请联系管理员。' });
-    }
+    try {
+      const { username, password } = req.body;
+      console.log(`Login attempt for: ${username}`);
+      
+      const user = db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username) as any;
+      
+      if (!user || !bcrypt.compareSync(password, user.password)) {
+        console.log(`Login failed for: ${username}`);
+        return res.status(401).json({ error: '用户名或密码错误，请联系管理员。' });
+      }
 
-    const { password: _, ...userWithoutPassword } = user;
-    const token = jwt.sign(userWithoutPassword, JWT_SECRET);
-    res.json({ token, user: userWithoutPassword });
+      const { password: _, ...userWithoutPassword } = user;
+      const token = jwt.sign(userWithoutPassword, JWT_SECRET);
+      console.log(`Login successful for: ${username}`);
+      res.json({ token, user: userWithoutPassword });
+    } catch (err: any) {
+      console.error('Login error:', err);
+      res.status(500).json({ error: '服务器内部错误' });
+    }
   });
 
   // 管理员创建用户
@@ -179,10 +188,16 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // 全局错误处理
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error('Unhandled Error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running locally (Local DB) at http://localhost:${PORT}`);

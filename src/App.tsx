@@ -106,6 +106,12 @@ export default function App() {
 
   // Initialize Local Auth
   useEffect(() => {
+    // API Health Check
+    fetch('/api/health')
+      .then(r => r.json())
+      .then(d => console.log('✅ API reachable:', d))
+      .catch(e => console.error('❌ API UNREACHABLE:', e));
+
     const savedToken = localStorage.getItem('echomaster_token');
     const savedUser = localStorage.getItem('echomaster_user');
     if (savedToken && savedUser) {

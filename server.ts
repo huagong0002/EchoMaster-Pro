@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 
+console.log('--- Initializing Database ---');
 const db = new Database('database.sqlite');
 const JWT_SECRET = 'echomaster-secret-key-12345';
 
@@ -60,20 +61,22 @@ if (!jerryShortExists) {
 }
 
 async function startServer() {
-  const app = express();
-  const PORT = 3000;
+  console.log('--- Starting Express Server ---');
+  try {
+    const app = express();
+    const PORT = 3000;
 
-  // 请求日志 - 移动到最前
-  app.use((req, res, next) => {
-    const timestamp = new Date().toISOString();
-    console.log(`${timestamp} - ${req.method} ${req.url}`);
-    next();
-  });
+    // 请求日志 - 移动到最前
+    app.use((req, res, next) => {
+      const timestamp = new Date().toISOString();
+      console.log(`${timestamp} - ${req.method} ${req.url}`);
+      next();
+    });
 
-  app.use(express.json());
-  app.use(cors());
+    app.use(express.json());
+    app.use(cors());
 
-  const apiRouter = express.Router();
+    const apiRouter = express.Router();
 
   // Health check
   apiRouter.get('/health', (req, res) => {
@@ -198,6 +201,10 @@ async function startServer() {
     res.json(map);
   });
 
+  app.get('/test-server', (req, res) => {
+    res.json({ message: 'Server is running', time: new Date().toISOString() });
+  });
+
   app.use('/api', apiRouter);
 
   // Vite 托管前端
@@ -221,9 +228,12 @@ async function startServer() {
     res.status(500).json({ error: 'Internal Server Error' });
   });
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running locally (Local DB) at http://localhost:${PORT}`);
-  });
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running locally (Local DB) at http://localhost:${PORT}`);
+    });
+  } catch (e) {
+    console.error('Server failed to start:', e);
+  }
 }
 
 startServer();

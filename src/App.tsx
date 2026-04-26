@@ -153,10 +153,13 @@ export default function App() {
     setIsLoggingIn(true);
     
     try {
-      const res = await fetch('/api/login', {
+      const loginUrl = `${window.location.origin}/api/login`;
+      console.log(`Attempting login at: ${loginUrl}`);
+      
+      const res = await fetch(loginUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: authUsername, password: authPassword })
+        body: JSON.stringify({ username: authUsername.trim(), password: authPassword })
       });
       
       let data;
@@ -165,11 +168,12 @@ export default function App() {
         data = await res.json();
       } else {
         const text = await res.text();
-        console.error('Non-JSON response from server:', text);
-        throw new Error(`服务器响应格式错误: ${text.substring(0, 50)}`);
+        const status = res.status;
+        console.error(`Status ${status} - Non-JSON response:`, text);
+        throw new Error(`服务器响应错误 (${status}): ${text.substring(0, 100)}`);
       }
 
-      if (!res.ok) throw new Error(data.error || '登录失败');
+      if (!res.ok) throw new Error(data.error || `登录失败 (${res.status})`);
 
       localStorage.setItem('echomaster_token', data.token);
       localStorage.setItem('echomaster_user', JSON.stringify(data.user));

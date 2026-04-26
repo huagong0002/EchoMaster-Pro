@@ -50,18 +50,28 @@ if (!jerryExists) {
   console.log('Default jerry user created');
 }
 
+const jerryShortExists = db.prepare('SELECT * FROM users WHERE username = ?').get('jerry');
+if (!jerryShortExists) {
+  const jerryShortId = 'jerry-002';
+  const hashedPassword = bcrypt.hashSync('sdeducation', 10);
+  db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
+    .run(jerryShortId, 'jerry', hashedPassword, 'Jerry', 'admin');
+  console.log('Default jerry (short) user created');
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
-  app.use(cors());
-
-  // 请求日志
+  // 请求日志 - 移动到最前
   app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    const timestamp = new Date().toISOString();
+    console.log(`${timestamp} - ${req.method} ${req.url}`);
     next();
   });
+
+  app.use(express.json());
+  app.use(cors());
 
   // 中间件：验证 JWT
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -173,9 +183,14 @@ async function startServer() {
     res.json(map);
   });
 
-  // 404 兜底 (API 路由)
-  app.all('/api/*', (req, res) => {
-    res.status(404).json({ error: 'API route not found' });
+  // 404 兜底 (针对所有 API 路由)
+  app.use('/api', (req, res) => {
+    console.warn(`API Not Found: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ 
+      error: 'API endpoint not found',
+      path: req.originalUrl,
+      method: req.method
+    });
   });
 
   // Vite 托管前端

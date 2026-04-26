@@ -73,6 +73,23 @@ async function startServer() {
   app.use(express.json());
   app.use(cors());
 
+  const apiRouter = express.Router();
+
+  // Health check
+  apiRouter.get('/health', (req, res) => {
+    res.json({ status: 'ok', time: new Date().toISOString(), env: process.env.NODE_ENV });
+  });
+
+  // Debug: List users (REMOVE IN PRODUCTION)
+  apiRouter.get('/debug/users', (req, res) => {
+    try {
+      const users = db.prepare('SELECT id, username, displayName, role FROM users').all();
+      res.json(users);
+    } catch (err) {
+      res.status(500).json({ error: err || 'Error reading users' });
+    }
+  });
+
   // 中间件：验证 JWT
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
@@ -86,10 +103,8 @@ async function startServer() {
     });
   };
 
-  // --- API 路由 ---
-
-  // 登录 (严格校验，不再允许自动注册)
-  app.post('/api/login', (req, res) => {
+  // 登录
+  apiRouter.post('/login', (req, res) => {
     try {
       const { username, password } = req.body;
       console.log(`Login attempt for: ${username}`);
@@ -112,7 +127,7 @@ async function startServer() {
   });
 
   // 管理员创建用户
-  app.post('/api/admin/create-user', authenticateToken, (req: any, res) => {
+  apiRouter.post('/admin/create-user', authenticateToken, (req: any, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
     
     const { username, password, displayName } = req.body;
@@ -133,7 +148,7 @@ async function startServer() {
   });
 
   // 获取所有材料 (共享库)
-  app.get('/api/materials', authenticateToken, (req, res) => {
+  apiRouter.get('/materials', authenticateToken, (req, res) => {
     const materials = db.prepare('SELECT * FROM materials ORDER BY updatedAt DESC').all() as any[];
     const formatted = materials.map(m => ({
       ...m,
@@ -143,7 +158,7 @@ async function startServer() {
   });
 
   // 保存材料
-  app.post('/api/materials', authenticateToken, (req: any, res) => {
+  apiRouter.post('/materials', authenticateToken, (req: any, res) => {
     const { id, title, audioUrl, script, segments } = req.body;
     const ownerId = req.user.id;
     const now = Date.now();
@@ -160,7 +175,7 @@ async function startServer() {
   });
 
   // 删除材料
-  app.delete('/api/materials/:id', authenticateToken, (req: any, res) => {
+  apiRouter.delete('/materials/:id', authenticateToken, (req: any, res) => {
     const material = db.prepare('SELECT ownerId FROM materials WHERE id = ?').get(req.params.id) as any;
     if (!material) return res.status(404).json({ error: 'Not found' });
     
@@ -174,7 +189,7 @@ async function startServer() {
   });
 
   // 用户映射表 (前端 attribution)
-  app.get('/api/users/map', authenticateToken, (req, res) => {
+  apiRouter.get('/users/map', authenticateToken, (req, res) => {
     const users = db.prepare('SELECT id, displayName FROM users').all() as any[];
     const map = users.reduce((acc, u) => {
       acc[u.id] = u.displayName;
@@ -183,15 +198,7 @@ async function startServer() {
     res.json(map);
   });
 
-  // 404 兜底 (针对所有 API 路由)
-  app.use('/api', (req, res) => {
-    console.warn(`API Not Found: ${req.method} ${req.originalUrl}`);
-    res.status(404).json({ 
-      error: 'API endpoint not found',
-      path: req.originalUrl,
-      method: req.method
-    });
-  });
+  app.use('/api', apiRouter);
 
   // Vite 托管前端
   if (process.env.NODE_ENV !== 'production') {

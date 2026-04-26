@@ -153,10 +153,9 @@ export default function App() {
     setIsLoggingIn(true);
     
     try {
-      const loginUrl = `${window.location.origin}/api/login`;
-      console.log(`Attempting login at: ${loginUrl}`);
+      console.log('Attempting login...');
       
-      const res = await fetch(loginUrl, {
+      const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: authUsername.trim(), password: authPassword })
@@ -170,6 +169,10 @@ export default function App() {
         const text = await res.text();
         const status = res.status;
         console.error(`Status ${status} - Non-JSON response:`, text);
+        // 如果是 404，特别提示可能是路径错误
+        if (status === 404) {
+          throw new Error('登录接口未找到 (404)。请确保后端服务已启动且路径正确。');
+        }
         throw new Error(`服务器响应错误 (${status}): ${text.substring(0, 100)}`);
       }
 

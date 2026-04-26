@@ -11,4 +11,5 @@ export interface ListeningMaterial {
   audioUrl: string;
   script: string;
   segments: AudioSegment[];
+  ownerId?: string;
 }

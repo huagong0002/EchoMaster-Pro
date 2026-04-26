@@ -1,0 +1,87 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Validation for ListeningMaterial
+    function isValidMaterial(data) {
+      return data.keys().hasAll(['title', 'audioUrl', 'script', 'segments', 'ownerId', 'updatedAt', 'createdAt'])
+        && data.title is string && data.title.size() <= 200
+        && data.audioUrl is string && data.audioUrl.size() <= 1000
+        && data.script is string && data.script.size() <= 65536
+        && data.segments is list && data.segments.size() <= 100
+        && data.ownerId == request.auth.uid
+        && data.updatedAt == request.time
+        && data.createdAt == request.time;
+    }
+
+    function isValidUpdate(data) {
+       return data.title is string && data.title.size() <= 200
+        && data.audioUrl is string && data.audioUrl.size() <= 1000
+        && data.script is string && data.script.size() <= 65536
+        && data.segments is list && data.segments.size() <= 100
+        && data.ownerId == resource.data.ownerId // Immutable
+        && data.updatedAt == request.time;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'jerrylee086@gmail.com' ||
+        request.auth.token.email == 'admin@echomaster.local'
+      );
+    }
+
+    // Validation for User
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'email', 'role', 'createdAt'])
+        && data.username is string && data.username.size() >= 2
+        && data.email is string && data.email.size() <= 200
+        && data.role in ['admin', 'user']
+        && data.createdAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isOwner(userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username', 'displayName']);
+    }
+
+    match /admins/{userId} {
+      allow read: if isSignedIn();
+      // Only allow creation if no admins exist (bootstrap) OR by an existing admin
+      allow create: if isSignedIn() && request.auth.uid == userId; 
+    }
+
+    match /materials/{materialId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      
+      allow create: if isSignedIn() 
+        && isValidId(materialId);
+        
+      allow update: if isSignedIn()
+        && (resource.data.ownerId == request.auth.uid || isAdmin())
+        && isValidUpdate(request.resource.data);
+        
+      allow delete: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+    }
+  }
+}

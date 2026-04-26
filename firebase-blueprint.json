@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "AudioSegment": {
+      "title": "Audio Segment",
+      "description": "A specific segment of the audio with its own subtitle",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "startTime": { "type": "number" },
+        "endTime": { "type": "number" },
+        "subtitle": { "type": "string" }
+      },
+      "required": ["id", "label", "startTime", "endTime"]
+    },
+    "ListeningMaterial": {
+      "title": "Listening Material",
+      "description": "Core data for a listening exercise",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "script": { "type": "string" },
+        "segments": {
+          "type": "array",
+          "items": { "$ref": "#/entities/AudioSegment" }
+        },
+        "ownerId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "ownerId", "updatedAt", "createdAt"]
+    },
+    "User": {
+      "title": "User Profile",
+      "description": "Basic user profile information",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["username", "email", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "materials/{materialId}": {
+      "schema": "ListeningMaterial",
+      "description": "Collections of listening materials owned by users"
+    },
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "admins/{userId}": {
+      "schema": "object",
+      "description": "Admin role markers"
+    }
+  }
+}

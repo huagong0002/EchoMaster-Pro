@@ -31,6 +31,25 @@ db.exec(`
   );
 `);
 
+// 预置管理员账号 (如果不存在)
+const adminExists = db.prepare('SELECT * FROM users WHERE username = ?').get('admin');
+if (!adminExists) {
+  const adminId = 'admin-001';
+  const hashedPassword = bcrypt.hashSync('sdeducation', 10);
+  db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
+    .run(adminId, 'admin', hashedPassword, '系统管理员', 'admin');
+  console.log('Default admin user created');
+}
+
+const jerryExists = db.prepare('SELECT * FROM users WHERE username = ?').get('jerrylee086');
+if (!jerryExists) {
+  const jerryId = 'jerry-001';
+  const hashedPassword = bcrypt.hashSync('sdeducation', 10);
+  db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
+    .run(jerryId, 'jerrylee086', hashedPassword, 'Jerry Lee', 'admin');
+  console.log('Default jerry user created');
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -53,29 +72,39 @@ async function startServer() {
 
   // --- API 路由 ---
 
-  // 登录
+  // 登录 (严格校验，不再允许自动注册)
   app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
     
     if (!user || !bcrypt.compareSync(password, user.password)) {
-      // 如果是第一次运行，且用户不存在，自动注册（方便教学环境使用）
-      if (!user && username && password) {
-        const id = Math.random().toString(36).substr(2, 9);
-        const hashedPassword = bcrypt.hashSync(password, 10);
-        db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
-          .run(id, username, hashedPassword, username, username === 'admin' ? 'admin' : 'user');
-        
-        const newUser = { id, username, displayName: username, role: username === 'admin' ? 'admin' : 'user' };
-        const token = jwt.sign(newUser, JWT_SECRET);
-        return res.json({ token, user: newUser });
-      }
-      return res.status(400).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: '用户名或密码错误，请联系管理员。' });
     }
 
     const { password: _, ...userWithoutPassword } = user;
     const token = jwt.sign(userWithoutPassword, JWT_SECRET);
     res.json({ token, user: userWithoutPassword });
+  });
+
+  // 管理员创建用户
+  app.post('/api/admin/create-user', authenticateToken, (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
+    
+    const { username, password, displayName } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Missing data' });
+
+    try {
+      const id = Math.random().toString(36).substr(2, 9);
+      const hashedPassword = bcrypt.hashSync(password, 10);
+      db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
+        .run(id, username, hashedPassword, displayName || username, 'user');
+      res.json({ success: true });
+    } catch (err: any) {
+      if (err.message.includes('UNIQUE')) {
+        return res.status(400).json({ error: '用户名已存在' });
+      }
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // 获取所有材料 (共享库)

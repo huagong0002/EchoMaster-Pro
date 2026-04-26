@@ -194,10 +194,18 @@ export default function App() {
     setAdminError('');
     
     try {
-      alert(`在本地模式下，由于不依赖外部验证，您可以直接让学生使用指定的用户名登录，系统会自动处理开户。`);
+      await api.post('/api/admin/create-user', {
+        username: newUserName.trim(),
+        password: newUserPassword,
+        displayName: newUserName.trim()
+      });
+      alert(`用户 ${newUserName} 创建成功！`);
+      setNewUserName('');
+      setNewUserPassword('');
       setShowAdminPanel(false);
+      fetchInitialData();
     } catch (err: any) {
-      setAdminError(err.message);
+      setAdminError(err.message || '创建失败');
     } finally {
       setIsCreatingUser(false);
     }
@@ -480,9 +488,9 @@ export default function App() {
                 {lines.map((line, lIdx) => {
                   const words = line.split(/(\s+)/);
                   return (
-                    <div key={lIdx} className="flex flex-wrap items-center leading-[4.5rem] mb-6">
+                    <div key={lIdx} className="flex flex-wrap items-baseline gap-x-3 md:gap-x-5 leading-[1.6] md:leading-[1.8] mb-8">
                       {words.map((word, wIdx) => {
-                        if (word.trim() === '') return <span key={wIdx} className="w-2"></span>;
+                        if (word.trim() === '') return null; // Use gap-x for spacing instead of manual spans
                         
                         const wordIdxInLine = currentWordGlobalIdx++;
                         let isWordActive = false;
@@ -498,11 +506,12 @@ export default function App() {
                             initial={false}
                             animate={{
                               color: isActive && isWordActive ? '#60a5fa' : 'inherit',
-                              y: isActive && isWordActive ? -2 : 0,
+                              y: isActive && isWordActive ? -1 : 0,
+                              opacity: isActive ? 1 : 0.4
                             }}
                             className={cn(
-                              "text-4xl md:text-6xl font-bold tracking-[0.05em] px-1 transition-all rounded",
-                              isActive && isWordActive ? "bg-blue-500/10 shadow-[0_4px_12px_rgba(37,99,235,0.2)]" : ""
+                              "text-3xl md:text-5xl font-bold tracking-tight transition-all rounded py-1 px-1",
+                              isActive && isWordActive ? "bg-blue-500/5" : ""
                             )}
                           >
                             {word}
@@ -952,13 +961,27 @@ export default function App() {
                             )}
                             <button 
                               onClick={() => {
-                                setMaterial(m);
-                                setCurrentMaterialId(m.id);
-                                setMode('edit');
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = 'audio/*';
+                                input.onchange = (ev: any) => {
+                                  const file = ev.target.files?.[0];
+                                  if (file) {
+                                    const url = URL.createObjectURL(file);
+                                    setMaterial({
+                                      ...m,
+                                      audioUrl: url
+                                    });
+                                    setCurrentMaterialId(m.id);
+                                    setMode('edit');
+                                  }
+                                };
+                                input.click();
                               }}
-                              className="text-xs font-bold text-slate-500 hover:text-white ml-auto"
+                              className="text-xs font-bold text-slate-500 hover:text-blue-400 ml-auto transition-colors flex items-center gap-1.5"
                             >
-                              配置
+                              <Settings2 size={14} />
+                              配置/导入音频
                             </button>
                           </div>
                       </motion.div>

@@ -66,20 +66,24 @@ async function startServer() {
     const app = express();
     const PORT = 3000;
 
-    // 请求日志 - 移动到最前
+    app.use(cors());
+    app.use(express.json());
+
+    // CRITICAL: Request Logging
     app.use((req, res, next) => {
       const timestamp = new Date().toISOString();
-      console.log(`${timestamp} - ${req.method} ${req.url}`);
+      console.log(`[REQ] ${timestamp} - ${req.method} ${req.url}`);
       next();
     });
 
-    app.use(express.json());
-    app.use(cors());
-
     const apiRouter = express.Router();
+    
+    // Mount API router early
+    app.use('/api', apiRouter);
 
-  // Health check
-  apiRouter.get('/health', (req, res) => {
+    // Health check
+    apiRouter.get('/health', (req, res) => {
+      console.log('[DEBUG] Health check hit');
     res.json({ 
       status: 'ok', 
       time: new Date().toISOString(), 
@@ -107,9 +111,13 @@ async function startServer() {
 
   // 1. 登录 (严格校验)
   apiRouter.post('/login', (req, res) => {
+    console.log('[DEBUG] Received login request at /api/login');
     try {
       const { username, password } = req.body;
-      if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
+      if (!username || !password) {
+        console.log('[DEBUG] Missing username or password');
+        return res.status(400).json({ error: 'Missing credentials' });
+      }
 
       console.log(`[AUTH] Login attempt: ${username}`);
       const user = db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username) as any;
@@ -201,11 +209,9 @@ async function startServer() {
     res.json(map);
   });
 
-  app.get('/test-server', (req, res) => {
-    res.json({ message: 'Server is running', time: new Date().toISOString() });
+  app.get('/status', (req, res) => {
+    res.json({ message: 'EchoMaster Server is online', time: new Date().toISOString() });
   });
-
-  app.use('/api', apiRouter);
 
   // API 404 Fallback
   apiRouter.use((req, res) => {

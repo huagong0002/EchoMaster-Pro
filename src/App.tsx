@@ -1,49 +1,52 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Play, 
-  Pause, 
-  RotateCcw, 
-  Settings2, 
-  BookOpen, 
-  Clock, 
-  Plus, 
-  Trash2, 
-  Download, 
-  Upload,
-  FastForward,
-  Rewind,
-  CheckCircle2,
-  ListMusic,
-  ArrowRight,
-  Save,
-  LogIn,
-  LogOut,
-  FolderOpen,
-  Home as HomeIcon,
-  User as UserIcon,
-  ShieldCheck,
-  Edit3,
-  ArrowLeft
+  Play, Pause, RotateCcw, Settings2, BookOpen, Clock, Plus, Trash2, 
+  Download, Upload, FastForward, Rewind, CheckCircle2, ListMusic, 
+  ArrowRight, Save, LogIn, LogOut, FolderOpen, Home as HomeIcon, 
+  User as UserIcon, ShieldCheck, Edit3, ArrowLeft 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { AudioSegment, ListeningMaterial } from './types';
 
-// Utility for tailwind classes
+// --- 类型定义 ---
+interface AudioSegment {
+  id: string;
+  label: string;
+  startTime: number;
+  endTime: number;
+  subtitle?: string;
+}
+
+interface ListeningMaterial {
+  id?: string;
+  title: string;
+  audioUrl: string;
+  script: string;
+  segments: AudioSegment[];
+  ownerId?: string;
+}
+
+interface LocalUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: 'user' | 'admin';
+}
+
+// --- 工具函数 ---
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// Simple Local API Helper
+// --- API 助手 (适配 Vercel Serverless) ---
 const api = {
   get: async (url: string) => {
     const token = localStorage.getItem('echomaster_token');
     const res = await fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    if (!res.ok) throw new Error(res.statusText);
+    if (!res.ok) throw new Error(`请求失败: ${res.status}`);
     return res.json();
   },
   post: async (url: string, data: any) => {
@@ -56,7 +59,10 @@ const api = {
       },
       body: JSON.stringify(data)
     });
-    if (!res.ok) throw new Error(res.statusText);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || `操作失败: ${res.status}`);
+    }
     return res.json();
   },
   delete: async (url: string) => {
@@ -65,33 +71,28 @@ const api = {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    if (!res.ok) throw new Error(res.statusText);
+    if (!res.ok) throw new Error(`删除失败: ${res.status}`);
     return res.json();
   }
 };
 
-interface LocalUser {
-  id: string;
-  username: string;
-  displayName: string;
-  role: 'user' | 'admin';
-}
-
 export default function App() {
+  // --- 核心状态 ---
   const [mode, setMode] = useState<'setup' | 'edit' | 'train' | 'gallery'>('setup');
   const [user, setUser] = useState<LocalUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [materials, setMaterials] = useState<(ListeningMaterial & { id: string })[]>([]);
+  const [usersMap, setUsersMap] = useState<Record<string, string>>({});
+  
+  // --- 认证状态 ---
   const [showAuthOverlay, setShowAuthOverlay] = useState(false);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authError, setAuthError] = useState('');
-  const [adminError, setAdminError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  const [materials, setMaterials] = useState<(ListeningMaterial & { id: string })[]>([]);
-  const [usersMap, setUsersMap] = useState<Record<string, string>>({}); // uid -> username
+  // --- 材料编辑状态 ---
   const [material, setMaterial] = useState<ListeningMaterial>({
     title: '未命名听力材料',
     audioUrl: '',
@@ -99,19 +100,25 @@ export default function App() {
     segments: [],
   });
   const [currentMaterialId, setCurrentMaterialId] = useState<string | null>(null);
-
-  const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
 
-  // Initialize Local Auth
+  // --- 播放器状态 ---
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
+  const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null);
+  const [showSubtitles, setShowSubtitles] = useState(true);
+
+  // --- 管理员逻辑 ---
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+
+  // 1. 初始化检查
   useEffect(() => {
-    // API Health Check
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(d => console.log('✅ API reachable:', d))
-      .catch(e => console.error('❌ API UNREACHABLE:', e));
-
     const savedToken = localStorage.getItem('echomaster_token');
     const savedUser = localStorage.getItem('echomaster_user');
     if (savedToken && savedUser) {
@@ -121,9 +128,8 @@ export default function App() {
         setUser(u);
         setIsAdmin(u.role === 'admin');
         fetchInitialData();
-      } catch (err) {
-        localStorage.removeItem('echomaster_token');
-        localStorage.removeItem('echomaster_user');
+      } catch (e) {
+        logout();
       }
     }
   }, []);
@@ -137,52 +143,27 @@ export default function App() {
       setMaterials(mats);
       setUsersMap(uMap);
     } catch (err) {
-      console.error("Failed to fetch initial data", err);
+      console.error("数据加载失败", err);
     }
   };
 
-  useEffect(() => {
-    if (user) {
-      const interval = setInterval(fetchInitialData, 5000); // 校园网环境下，每5秒轮询一次同步公共库
-      return () => clearInterval(interval);
-    }
-  }, [user]);
-
-  const [showAdminPanel, setShowAdminPanel] = useState(false);
-  const [newUserName, setNewUserName] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [isCreatingUser, setIsCreatingUser] = useState(false);
-
+  // 2. 登录逻辑 (对接你的 Flask 后端)
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     setIsLoggingIn(true);
     
     try {
-      console.log('Attempting login...');
-      
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: authUsername.trim(), password: authPassword })
       });
       
-      let data;
-      const contentType = res.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
-        const status = res.status;
-        console.error(`Status ${status} - Non-JSON response:`, text);
-        // 如果是 404，特别提示可能是路径错误
-        if (status === 404) {
-          throw new Error('登录接口未找到 (404)。请确保后端服务已启动且路径正确。');
-        }
-        throw new Error(`服务器响应错误 (${status}): ${text.substring(0, 100)}`);
-      }
-
-      if (!res.ok) throw new Error(data.error || `登录失败 (${res.status})`);
+      if (res.status === 404) throw new Error('接口未找到 (404)，请检查 vercel.json 配置');
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || '登录失败');
 
       localStorage.setItem('echomaster_token', data.token);
       localStorage.setItem('echomaster_user', JSON.stringify(data.user));
@@ -200,156 +181,14 @@ export default function App() {
   };
 
   const logout = () => {
-    localStorage.removeItem('echomaster_token');
-    localStorage.removeItem('echomaster_user');
+    localStorage.clear();
     setUser(null);
     setToken(null);
     setIsAdmin(false);
-    setMaterials([]);
     setMode('setup');
   };
 
-  const createInternalUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isAdmin || !user) return;
-    setIsCreatingUser(true);
-    setAdminError('');
-    
-    try {
-      await api.post('/api/admin/create-user', {
-        username: newUserName.trim(),
-        password: newUserPassword,
-        displayName: newUserName.trim()
-      });
-      alert(`用户 ${newUserName} 创建成功！`);
-      setNewUserName('');
-      setNewUserPassword('');
-      setShowAdminPanel(false);
-      fetchInitialData();
-    } catch (err: any) {
-      setAdminError(err.message || '创建失败');
-    } finally {
-      setIsCreatingUser(false);
-    }
-  };
-
-  const renameMaterial = async (id: string, newTitle: string) => {
-    if (!newTitle || !newTitle.trim()) return;
-    try {
-      const original = materials.find(m => m.id === id);
-      if (!original) return;
-
-      await api.post(`/api/materials`, {
-        ...original,
-        title: newTitle.trim(),
-        id: id
-      });
-      fetchInitialData();
-    } catch (err) {
-      console.error("Rename failed", err);
-      alert("重命名失败");
-    }
-  };
-
-  // Cloud Sync: Save function (Now hits local API)
-  const saveToCloud = async () => {
-    if (!user) {
-      setShowAuthOverlay(true);
-      return;
-    }
-    
-    setIsSyncing(true);
-    try {
-      const id = currentMaterialId || Math.random().toString(36).substr(2, 9);
-      await api.post('/api/materials', {
-        ...material,
-        id,
-      });
-      
-      setCurrentMaterialId(id);
-      setLastSaved(new Date().toLocaleTimeString());
-      fetchInitialData();
-    } catch (err) {
-      console.error("Save Error", err);
-      alert("保存失败，请检查网络连接（校园网专用模式）。");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const deleteUser = async (id: string, name: string) => {
-    if (!window.confirm(`⚠️ 重要：确定要彻底注销用户 [${name}] 吗？\n由于本地校园网模式安全限制，注销用户需要由系统管理员在服务器端操作数据库。在此处点击仅为确认意图。`)) return;
-    alert("该功能在本地模式下已被物理隔离，请联系机房老师手动清理 database.sqlite 文件。");
-  };
-
-  const deleteMaterial = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!window.confirm('确定要从公共库中彻底删除这个听力材料吗？此操作无法撤销。')) return;
-    
-    try {
-      await api.delete(`/api/materials/${id}`);
-      fetchInitialData();
-      if (currentMaterialId === id) {
-        setMode('gallery');
-        setCurrentMaterialId(null);
-        setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
-      }
-    } catch (err) {
-      alert("只有上传者或管理员可以删除该材料。");
-    }
-  };
-
-  const selectMaterial = (m: any) => {
-    setMaterial(m);
-    setCurrentMaterialId(m.id);
-    setMode('train');
-    if (audioRef.current) audioRef.current.currentTime = 0;
-  };
-
-  const createNewMaterial = () => {
-    setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
-    setCurrentMaterialId(null);
-    setMode('setup');
-    setSetupOption('new');
-  };
-
-  // Auto-save debounced (Local API version)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (user && currentMaterialId) {
-        api.post('/api/materials', {
-          ...material,
-          id: currentMaterialId
-        }).catch(err => {
-          console.error("Auto Sync Error", err);
-        });
-      }
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [material, user, currentMaterialId]);
-
-  const [setupOption, setSetupOption] = useState<'new' | 'existing'>('new');
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null);
-  const [showSubtitles, setShowSubtitles] = useState(true);
-  const [syncScroll, setSyncScroll] = useState(true);
-  const transcriptRef = useRef<HTMLDivElement>(null);
-
-  // Handle audio upload
-  const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // Local preview only - No cloud upload per user request
-      const localUrl = URL.createObjectURL(file);
-      setMaterial(prev => ({ ...prev, audioUrl: localUrl }));
-    }
-  };
-
-  // Playback Control
+  // 3. 听力分段逻辑
   const togglePlay = () => {
     if (audioRef.current) {
       if (isPlaying) {
@@ -367,1315 +206,322 @@ export default function App() {
     }
   };
 
-  // Auto-segmentation helper (based on time markers in text like [00:12])
-  const extractSegmentsFromScript = () => {
-    const regex = /\[(\d{1,2}):(\d{2})\]/g;
-    const matches = Array.from(material.script.matchAll(regex));
-    if (matches.length === 0) return;
-
-    const newSegments: AudioSegment[] = matches.map((match, index) => {
-      const startSec = parseInt(match[1]) * 60 + parseInt(match[2]);
-      const nextMatch = matches[index + 1];
-      const endSec = nextMatch 
-        ? parseInt(nextMatch[1]) * 60 + parseInt(nextMatch[2]) 
-        : duration || startSec + 30;
-      
-      // Get text between this timestamp and next
-      const startIndex = match.index! + match[0].length;
-      const endIndex = nextMatch ? nextMatch.index : material.script.length;
-      const content = material.script.substring(startIndex, endIndex).trim();
-
-      return {
-        id: crypto.randomUUID(),
-        label: `题目 ${index + 1}`,
-        startTime: startSec,
-        endTime: endSec,
-        subtitle: content
-      };
-    });
-    setMaterial(prev => ({ ...prev, segments: newSegments }));
+  const addSegment = () => {
+    const newSeg: AudioSegment = {
+      id: Math.random().toString(36).substr(2, 9),
+      label: `题目 ${material.segments.length + 1}`,
+      startTime: currentTime,
+      endTime: Math.min(currentTime + 5, duration),
+      subtitle: ''
+    };
+    setMaterial(prev => ({ ...prev, segments: [...prev.segments, newSeg] }));
   };
 
-  // 1. Clear all segments with a safer implementation
-  const clearAllSegments = () => {
-    setMaterial(prev => ({
-      ...prev,
-      segments: []
-    }));
-    setActiveSegmentIndex(null);
-    setCurrentTime(0); // Reset time to start to ensure clean state
-    if (audioRef.current) audioRef.current.currentTime = 0;
-  };
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const handleTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-      
-      // Check for segment changes in training mode
-      if (mode === 'train') {
-        const currentIdx = material.segments.findIndex(
-          seg => audio.currentTime >= seg.startTime && audio.currentTime < seg.endTime
-        );
-        if (currentIdx !== activeSegmentIndex) {
-          setActiveSegmentIndex(currentIdx === -1 ? null : currentIdx);
-        }
-      }
-    };
-
-    const handleLoadedMetadata = () => {
-      setDuration(audio.duration);
-    };
-
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
-    audio.addEventListener('play', () => setIsPlaying(true));
-    audio.addEventListener('pause', () => setIsPlaying(false));
-
-    return () => {
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      audio.removeEventListener('play', () => setIsPlaying(true));
-      audio.removeEventListener('pause', () => setIsPlaying(false));
-    };
-  }, [material.segments, material.audioUrl, mode, activeSegmentIndex]);
-
-  // Handle auto-scroll to active segment
-  useEffect(() => {
-    if (mode === 'train' && syncScroll && activeSegmentIndex !== null && transcriptRef.current) {
-      const activeElement = transcriptRef.current.querySelector(`[data-segment-index="${activeSegmentIndex}"]`);
-      if (activeElement) {
-        activeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+  const saveToCloud = async () => {
+    if (!user) { setShowAuthOverlay(true); return; }
+    setIsSyncing(true);
+    try {
+      const id = currentMaterialId || Math.random().toString(36).substr(2, 9);
+      await api.post('/api/materials', { ...material, id });
+      setCurrentMaterialId(id);
+      setLastSaved(new Date().toLocaleTimeString());
+      fetchInitialData();
+    } catch (err) {
+      alert("保存失败，请检查网络");
+    } finally {
+      setIsSyncing(false);
     }
-  }, [activeSegmentIndex, mode, syncScroll]);
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = playbackSpeed;
-    }
-  }, [playbackSpeed]);
-
-  const formatTime = (time: number) => {
-    return `${Math.floor(time)}s`;
   };
 
-    // Helper to render script with highlighting
-    const renderTranscript = (onlyActive: boolean = false) => {
-      let items = material.segments.map((seg, idx) => ({
-        index: idx,
-        text: seg.subtitle || '',
-        startTime: seg.startTime,
-        endTime: seg.endTime
-      }));
-
-      if (onlyActive && activeSegmentIndex !== null) {
-        items = [items[activeSegmentIndex]];
-      }
-
-      if (items.length === 0 || (onlyActive && activeSegmentIndex === null)) {
-        return (
-          <div className="flex flex-col items-center justify-center h-full text-slate-600 italic py-10 opacity-40">
-            <BookOpen size={48} className="mb-4" />
-            <p>{onlyActive ? "点击左侧题目预览听力脚本" : "暂无分段内容"}</p>
-          </div>
-        );
-      }
-      
-      return (
-        <div className={cn("flex flex-col w-full", onlyActive ? "gap-6" : "gap-16 py-10")}>
-          {items.map((item, idx) => {
-            const isActive = onlyActive ? true : item.index === activeSegmentIndex;
-            const lines = item.text.split('\n');
-            const duration = item.endTime - item.startTime;
-            const totalWords = item.text.split(/\s+/).filter(Boolean).length;
-            let currentWordGlobalIdx = 0;
-
-            return (
-              <motion.div 
-                key={item.index}
-                data-segment-index={item.index}
-                initial={false}
-                animate={{ 
-                  opacity: showSubtitles ? (isActive ? 1 : 0.2) : 0,
-                  scale: isActive ? 1 : 0.98,
-                }}
-                className={cn(
-                  "w-full text-left transition-all duration-500 whitespace-pre-wrap",
-                  isActive ? "text-white" : "text-slate-500"
-                )}
-              >
-                {lines.map((line, lIdx) => {
-                  const words = line.split(/(\s+)/);
-                  return (
-                    <div key={lIdx} className="flex flex-wrap items-baseline gap-x-3 md:gap-x-5 leading-[1.6] md:leading-[1.8] mb-8">
-                      {words.map((word, wIdx) => {
-                        if (word.trim() === '') return null; // Use gap-x for spacing instead of manual spans
-                        
-                        const wordIdxInLine = currentWordGlobalIdx++;
-                        let isWordActive = false;
-                        if (isActive && duration > 0 && totalWords > 0) {
-                          const elapsed = currentTime - item.startTime;
-                          const wordProgress = (elapsed / duration) * totalWords;
-                          isWordActive = wordIdxInLine <= wordProgress;
-                        }
-
-                        return (
-                          <motion.span
-                            key={wIdx}
-                            initial={false}
-                            animate={{
-                              color: isActive && isWordActive ? '#60a5fa' : 'inherit',
-                              y: isActive && isWordActive ? -1 : 0,
-                              opacity: isActive ? 1 : 0.4
-                            }}
-                            className={cn(
-                              "text-3xl md:text-5xl font-bold tracking-tight transition-all rounded py-1 px-1",
-                              isActive && isWordActive ? "bg-blue-500/5" : ""
-                            )}
-                          >
-                            {word}
-                          </motion.span>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </motion.div>
-            );
-          })}
-        </div>
-      );
-    };
-
-  const [galleryUserFilter, setGalleryUserFilter] = useState<string>('all');
-
-  const filteredMaterials = useMemo(() => {
-    if (!isAdmin || galleryUserFilter === 'all') return materials;
-    return materials.filter(m => m.ownerId === galleryUserFilter);
-  }, [materials, isAdmin, galleryUserFilter]);
-
+  // --- 渲染部分 (精简版) ---
   return (
-    <div className="min-h-screen font-sans selection:bg-blue-500/30 selection:text-white">
-      {/* Header */}
-      <header className="sticky top-0 z-50 glass border-b border-white/10">
-        <div className="max-w-7xl mx-auto px-10 h-24 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-blue-600/30">
-              E
-            </div>
+    <div className="min-h-screen bg-[#0f172a] text-slate-200 selection:bg-blue-500/30">
+      {/* 顶部导航 */}
+      <header className="sticky top-0 z-50 bg-[#0f172a]/80 backdrop-blur-md border-b border-white/5 px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold">E</div>
             <div>
-              <h1 className="text-2xl font-black tracking-tight text-white leading-none">EchoMaster Pro</h1>
-              <p className="text-[12px] text-blue-400 font-bold uppercase tracking-[0.3em] mt-1.5">High School Listening Lab</p>
+              <h1 className="text-lg font-bold leading-none">EchoMaster Pro</h1>
+              <p className="text-[10px] text-blue-400 tracking-widest mt-1 uppercase">Local Database Mode</p>
             </div>
           </div>
-
-          <nav className="flex items-center gap-3">
-            <button 
-              onClick={() => setMode('setup')}
-              className={cn(
-                "px-4 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2",
-                mode === 'setup' ? "bg-white/10 text-white shadow-lg" : "text-slate-400 hover:text-white"
-              )}
-            >
-              <HomeIcon size={16} /> 首页
+          
+          <nav className="flex items-center gap-4">
+            <button onClick={() => setMode('gallery')} className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg hover:bg-white/5">
+              <FolderOpen size={16} /> 材料库
             </button>
-
-            {user && (
-              <button 
-                onClick={() => setMode('gallery')}
-                className={cn(
-                  "px-4 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2",
-                  mode === 'gallery' ? "bg-blue-600 text-white shadow-lg" : "btn-glass text-slate-300"
-                )}
-              >
-                <FolderOpen size={16} /> 库
-              </button>
-            )}
-
-            {currentMaterialId && (
-              <>
-                <div className="w-[1px] h-6 bg-white/10 mx-1" />
-                <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-                  <button 
-                    onClick={() => setMode('edit')}
-                    className={cn(
-                      "px-4 py-1.5 text-xs font-bold transition-all rounded-lg flex items-center gap-2",
-                      mode === 'edit' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
-                    )}
-                  >
-                    <Settings2 size={14} /> 编辑
-                  </button>
-                  <button 
-                    onClick={() => setMode('train')}
-                    className={cn(
-                      "px-4 py-1.5 text-xs font-bold transition-all rounded-lg flex items-center gap-2",
-                      mode === 'train' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
-                    )}
-                  >
-                    <BookOpen size={14} /> 训练
-                  </button>
-                </div>
-              </>
-            )}
-            
-            <div className="w-[1px] h-6 bg-white/10 mx-1" />
-
-            {lastSaved && (
-              <span className="text-[10px] font-bold text-green-500 uppercase tracking-tighter opacity-70 hidden md:inline">
-                {lastSaved} {isSyncing ? "同步中..." : "已完成"}
-              </span>
-            )}
-            <button 
-              onClick={saveToCloud}
-              className="btn-glass p-2.5 rounded-xl text-blue-400 hover:text-white transition-all group"
-              title="保存到本地数据库"
-            >
-              <Save size={18} className={cn("group-active:scale-95", isSyncing && "animate-pulse")} />
-            </button>
-            {isAdmin && (
-              <button 
-                onClick={() => setShowAdminPanel(true)}
-                className="px-4 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2 text-yellow-500 hover:bg-yellow-500/10"
-              >
-                <ShieldCheck size={16} /> 管理用户
-              </button>
-            )}
-
-            <div className="w-[1px] h-6 bg-white/10 mx-1" />
-            
             {user ? (
-               <div className="flex items-center gap-3 pl-2 border-l border-white/5">
-                 <div className="flex flex-col items-end">
-                   <div className="flex items-center gap-2">
-                     <span className="text-xs font-bold text-white tracking-tight">{usersMap[user.id] || user.displayName || '用户'}</span>
-                     {isAdmin && <ShieldCheck size={14} className="text-yellow-500" />}
-                   </div>
-                   <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{isAdmin ? '管理员' : '普通用户'}</span>
-                 </div>
-                 <div className="w-8 h-8 rounded-full bg-blue-600/20 flex items-center justify-center text-blue-400 border border-white/10 shrink-0">
-                   <UserIcon size={16} />
-                 </div>
-                 <button onClick={logout} className="text-slate-500 hover:text-red-400 transition-colors">
-                   <LogOut size={18} />
-                 </button>
-               </div>
+              <button onClick={logout} className="flex items-center gap-2 text-sm text-red-400 px-4 py-2 rounded-lg hover:bg-red-400/10">
+                <LogOut size={16} /> 登出
+              </button>
             ) : (
-              <button 
-                onClick={() => setShowAuthOverlay(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-xl font-bold text-sm hover:bg-slate-100 transition-all active:scale-95"
-              >
-                <LogIn size={16} /> 登录同步
+              <button onClick={() => setShowAuthOverlay(true)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold">
+                登录
               </button>
             )}
           </nav>
         </div>
       </header>
 
-      <AnimatePresence>
-        {showAuthOverlay && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="glass p-10 rounded-[32px] w-full max-w-md space-y-8 relative"
-            >
-              <button 
-                onClick={() => setShowAuthOverlay(false)}
-                className="absolute top-6 right-6 text-slate-500 hover:text-white"
-              >
-                <Plus size={24} className="rotate-45" />
-              </button>
-
-              <div className="text-center space-y-2">
-                <h3 className="text-2xl font-bold text-white">账号登录</h3>
-                <p className="text-sm text-slate-400">输入用户名和密码登录听力系统</p>
-              </div>
-
-              <form onSubmit={handleAuth} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2">用户名</label>
-                  <input 
-                    type="text"
-                    required
-                    value={authUsername}
-                    onChange={(e) => setAuthUsername(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-blue-500/50"
-                    placeholder="例如: admin"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2">密码</label>
-                  <input 
-                    type="password"
-                    required
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-blue-500/50"
-                    placeholder="••••••••"
-                  />
-                </div>
-                
-                {authError && <p className="text-xs text-red-500 text-center">{authError}</p>}
-
-                <button 
-                  type="submit"
-                  disabled={isLoggingIn}
-                  className="w-full h-14 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/20 active:scale-[0.98] disabled:opacity-50"
-                >
-                  <LogIn size={20} /> {isLoggingIn ? '登录中...' : '登录'}
-                </button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-
-        {showAdminPanel && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="glass p-8 rounded-[32px] w-full max-w-2xl max-h-[85vh] flex flex-col relative overflow-hidden"
-            >
-              <button 
-                onClick={() => setShowAdminPanel(false)}
-                className="absolute top-6 right-6 text-slate-500 hover:text-white z-20"
-              >
-                <Plus size={24} className="rotate-45" />
-              </button>
-
-              <div className="flex-grow overflow-y-auto custom-scrollbar pr-2 space-y-10">
-                <div className="text-center space-y-2 mt-4">
-                  <h3 className="text-2xl font-bold text-white text-yellow-500">管理员控制台</h3>
-                  <p className="text-sm text-slate-400">管理用户账号及材料库权限</p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                  {/* Left: Create User */}
-                  <div className="space-y-6">
-                    <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b border-white/5 pb-2">创建新账号</h4>
-                    <form onSubmit={createInternalUser} className="space-y-4">
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2">用户名</label>
-                        <input 
-                          type="text"
-                          required
-                          value={newUserName}
-                          onChange={(e) => setNewUserName(e.target.value)}
-                          className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm focus:outline-none focus:border-blue-500/50"
-                          placeholder="姓名拼音"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2">初始密码</label>
-                        <input 
-                          type="text"
-                          required
-                          value={newUserPassword}
-                          onChange={(e) => setNewUserPassword(e.target.value)}
-                          className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm focus:outline-none focus:border-blue-500/50"
-                          placeholder="初始密码"
-                        />
-                      </div>
-                      
-                      {adminError && <p className="text-xs text-red-500">{adminError}</p>}
-
-                      <button 
-                        type="submit"
-                        disabled={isCreatingUser}
-                        className="w-full h-12 bg-yellow-600 text-white rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-yellow-700 transition-all shadow-lg shadow-yellow-600/20 active:scale-[0.98] disabled:opacity-50"
-                      >
-                        <Plus size={18} /> {isCreatingUser ? '创建中...' : '确认创建'}
-                      </button>
-                    </form>
-                  </div>
-
-                  {/* Right: User List */}
-                  <div className="space-y-6">
-                    <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b border-white/5 pb-2">现有账号 ({Object.keys(usersMap).length})</h4>
-                    <div className="space-y-3">
-                      {Object.entries(usersMap).map(([uid, name]) => (
-                        <div key={uid} className="flex items-center justify-between p-3 bg-white/5 rounded-2xl border border-white/5 group">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-500">
-                              {name.charAt(0).toUpperCase()}
-                            </div>
-                            <span className="text-sm font-bold text-slate-300">{name}</span>
-                          </div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                             <button 
-                               onClick={() => {
-                                 alert("本地模式下请通过数据库管理工具修改用户名。");
-                               }}
-                               className="p-2 text-slate-500 hover:text-blue-400"
-                               title="修改用户名"
-                             >
-                               <Edit3 size={14} />
-                             </button>
-                             <button 
-                               onClick={() => deleteUser(uid, name)}
-                               className="p-2 text-red-500/50 hover:text-red-500"
-                               title="一键彻底注销(删人+删内容)"
-                             >
-                               <Trash2 size={14} />
-                             </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <main className="max-w-7xl mx-auto px-10 py-12">
+      <main className="max-w-7xl mx-auto p-6">
         <AnimatePresence mode="wait">
-          {mode === 'gallery' && (
-            <motion.div 
-               key="gallery"
-               initial={{ opacity: 0, y: 20 }}
-               animate={{ opacity: 1, y: 0 }}
-               exit={{ opacity: 0, y: -20 }}
-               className="space-y-10"
-            >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-3xl font-black text-white tracking-tighter">材料库</h2>
-                  <p className="text-slate-500 text-sm mt-1">管理你的所有听力练习内容</p>
-                </div>
-                
-                <div className="flex items-center gap-4">
-                  {isAdmin && (
-                    <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-2xl px-4 py-2">
-                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">筛选账户:</span>
-                       <select 
-                         value={galleryUserFilter}
-                         onChange={(e) => setGalleryUserFilter(e.target.value)}
-                         className="bg-transparent border-none text-xs font-bold text-blue-400 focus:outline-none cursor-pointer"
-                       >
-                         <option value="all" className="bg-slate-900 text-white">全部材料</option>
-                         {Object.entries(usersMap).map(([uid, name]) => (
-                           <option key={uid} value={uid} className="bg-slate-900 text-white">{name}</option>
-                         ))}
-                       </select>
-                    </div>
-                  )}
-                  <button 
-                    onClick={createNewMaterial}
-                    className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 hover:scale-105 transition-all"
-                  >
-                    <Plus size={20} /> 新建材料
+          {/* 登录弹窗 */}
+          {showAuthOverlay && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-[#1e293b] border border-white/10 p-8 rounded-3xl w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-6 text-center">校园网账号登录</h2>
+                <form onSubmit={handleAuth} className="space-y-4">
+                  <input 
+                    type="text" 
+                    placeholder="用户名" 
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 outline-none focus:border-blue-500"
+                    value={authUsername}
+                    onChange={e => setAuthUsername(e.target.value)}
+                  />
+                  <input 
+                    type="password" 
+                    placeholder="密码" 
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 outline-none focus:border-blue-500"
+                    value={authPassword}
+                    onChange={e => setAuthPassword(e.target.value)}
+                  />
+                  {authError && <p className="text-red-400 text-xs text-center">{authError}</p>}
+                  <button type="submit" disabled={isLoggingIn} className="w-full bg-blue-600 py-3 rounded-xl font-bold hover:bg-blue-500 disabled:opacity-50">
+                    {isLoggingIn ? '正在连接后端...' : '立即登录'}
                   </button>
+                  <button type="button" onClick={() => setShowAuthOverlay(false)} className="w-full text-slate-500 text-sm">取消</button>
+                </form>
+              </div>
+            </motion.div>
+          )}
+
+          {/* 初始界面 / 设置模式 */}
+          {mode === 'setup' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-xl mx-auto space-y-8 py-12 text-center">
+              <div className="space-y-4">
+                <h2 className="text-4xl font-black text-white">欢迎使用 EchoMaster</h2>
+                <p className="text-slate-400">高校听力个性化训练系统 (本地数据库版)</p>
+              </div>
+              <div className="grid gap-4">
+                <button 
+                  onClick={() => setMode('gallery')}
+                  className="bg-blue-600 hover:bg-blue-500 text-white py-6 rounded-3xl font-bold text-xl shadow-xl shadow-blue-600/20 transition-all flex items-center justify-center gap-4"
+                >
+                  <FolderOpen size={28} /> 进入材料库
+                </button>
+                {isAdmin && (
+                  <button 
+                    onClick={() => {
+                       const title = prompt('输入材料标题:');
+                       if (title) {
+                         setMaterial({ title, audioUrl: '', script: '', segments: [] });
+                         setMode('edit');
+                       }
+                    }}
+                    className="bg-white/5 hover:bg-white/10 border border-white/10 text-white py-4 rounded-3xl font-bold transition-all"
+                  >
+                    + 创建新材料 (管理员)
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* 材料库界面 */}
+          {mode === 'gallery' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold">听力材料库</h2>
+                  <p className="text-sm text-slate-400">已加载 {materials.length} 个材料</p>
                 </div>
+                <button onClick={() => fetchInitialData()} className="p-2 text-slate-400 hover:text-white">
+                  <RotateCcw size={20} />
+                </button>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <AnimatePresence>
-                  {filteredMaterials.map((m) => {
-                    const ownerName = usersMap[m.ownerId || ''] || '未知用户';
-                    return (
-                      <motion.div 
-                        key={m.id}
-                        layout
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="glass p-6 rounded-[32px] border-white/5 hover:border-blue-500/30 transition-all group flex flex-col justify-between h-[200px] relative overflow-hidden"
-                      >
-                        {m.ownerId && (
-                          <div className={cn(
-                            "absolute top-0 right-0 px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-bl-xl border-l border-b transition-all",
-                            user && m.ownerId === user.id 
-                              ? "bg-green-500/10 text-green-400 border-green-500/20" 
-                              : "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                          )}>
-                            {user && m.ownerId === user.id ? "我的材料" : `来自: ${ownerName}`}
-                          </div>
-                        )}
-
-                        <div>
-                          <div className="flex items-start justify-between">
-                            <h3 className="font-bold text-white text-lg line-clamp-2 pr-4">{m.title}</h3>
-                               {(isAdmin || (user && m.ownerId === user.id)) && (
-                                 <div className="flex items-center gap-1">
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const newTitle = prompt("重命名材料库:", m.title);
-                                      if (newTitle) renameMaterial(m.id, newTitle);
-                                    }}
-                                    className="p-2 text-slate-500 hover:text-blue-400 transition-colors bg-white/5 rounded-xl border border-white/10 hover:border-blue-500/30 z-10 shrink-0"
-                                    title="重命名"
-                                  >
-                                    <Edit3 size={16} />
-                                  </button>
-                                  <button 
-                                    onClick={(e) => deleteMaterial(m.id, e)}
-                                    className="p-2 text-white hover:text-red-500 transition-colors bg-red-500/20 rounded-xl border border-red-500/30 hover:border-red-500/50 z-10 shrink-0"
-                                    title="彻底删除"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
-                                </div>
-                              )}
-                          </div>
-                          <div className="flex items-center gap-4 mt-2">
-                             <p className="text-[10px] text-slate-500 flex items-center gap-1.5 uppercase font-bold tracking-wider">
-                               <Clock size={12} /> {m.segments?.length || 0} SEGS
-                             </p>
-                             <p className={cn(
-                               "text-[10px] flex items-center gap-1.5 uppercase font-bold tracking-wider",
-                               !m.audioUrl ? "text-yellow-500/60" : "text-green-500/60"
-                             )}>
-                               {!m.audioUrl ? "需加载音频" : "已关联音频"}
-                             </p>
-                          </div>
-                        </div>
-
-                          <div className="flex items-center gap-3 pt-4 border-t border-white/5">
-                            {m.audioUrl ? (
-                              <button 
-                                onClick={() => selectMaterial(m)}
-                                className="text-xs font-bold text-blue-400 flex items-center gap-1 group-hover:gap-2 transition-all h-9"
-                              >
-                                开始训练 <ArrowRight size={14} />
-                              </button>
-                            ) : (
-                              <label className="text-xs font-bold text-yellow-500 flex items-center gap-1 hover:text-yellow-400 cursor-pointer transition-all bg-yellow-500/5 px-3 py-2 rounded-xl border border-yellow-500/10">
-                                <Upload size={14} /> 导入音频
-                                <input 
-                                  type="file" 
-                                  accept="audio/*" 
-                                  className="hidden" 
-                                  onChange={async (e) => {
-                                    const file = e.target.files?.[0];
-                                    if (file) {
-                                      const localUrl = URL.createObjectURL(file);
-                                      try {
-                                        // Update the local state immediately
-                                        const updatedMaterials = materials.map(mat => 
-                                          mat.id === m.id ? { ...mat, audioUrl: localUrl } : mat
-                                        );
-                                        setMaterials(updatedMaterials);
-                                        // And open the training mode with this material
-                                        selectMaterial({ ...m, audioUrl: localUrl });
-                                      } catch (err) {
-                                        console.error("Local load failed", err);
-                                      }
-                                    }
-                                  }} 
-                                />
-                              </label>
-                            )}
-                            <button 
-                              onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = 'audio/*';
-                                input.onchange = (ev: any) => {
-                                  const file = ev.target.files?.[0];
-                                  if (file) {
-                                    const url = URL.createObjectURL(file);
-                                    setMaterial({
-                                      ...m,
-                                      audioUrl: url
-                                    });
-                                    setCurrentMaterialId(m.id);
-                                    setMode('edit');
-                                  }
-                                };
-                                input.click();
-                              }}
-                              className="text-xs font-bold text-slate-500 hover:text-blue-400 ml-auto transition-colors flex items-center gap-1.5"
-                            >
-                              <Settings2 size={14} />
-                              配置/导入音频
-                            </button>
-                          </div>
-                      </motion.div>
-                    );
-                  })}
-                  {materials.length === 0 && (
-                    <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-600 border border-dashed border-white/10 rounded-[40px]">
-                      <FolderOpen size={48} className="mb-4 opacity-20" />
-                      <p className="text-sm">暂无材料，点击右上角新建</p>
+                {materials.map(m => (
+                  <div key={m.id} className="bg-[#1e293b] border border-white/10 p-6 rounded-[32px] hover:border-blue-500/40 transition-all group">
+                    <h3 className="text-lg font-bold mb-2 group-hover:text-blue-400">{m.title}</h3>
+                    <div className="flex items-center gap-3 text-xs text-slate-500 mb-6">
+                      <Clock size={14}/> {m.segments.length} 个分段
+                      <span>•</span>
+                      <span>上传者: {usersMap[m.ownerId || ''] || '未知'}</span>
                     </div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-
-          {mode === 'setup' && (
-            <motion.div 
-              key="setup"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-2xl mx-auto space-y-8"
-            >
-              <div className="glass p-10 rounded-[32px] space-y-8">
-                <div className="space-y-6">
-                  <h2 className="text-4xl font-bold text-white">开始新的听力任务</h2>
-                  
-                  {user && (
-                    <div className="flex bg-white/5 p-1.5 rounded-2xl border border-white/10 h-16">
-                      <button 
-                        onClick={() => {
-                          setSetupOption('new');
-                          setCurrentMaterialId(null);
-                          setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
-                        }}
-                        className={cn(
-                          "flex-1 text-base font-bold rounded-xl transition-all",
-                          setupOption === 'new' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
-                        )}
-                      >
-                        建立新材料库
-                      </button>
-                      <button 
-                        onClick={() => setSetupOption('existing')}
-                        className={cn(
-                          "flex-1 text-base font-bold rounded-xl transition-all",
-                          setupOption === 'existing' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
-                        )}
-                      >
-                        选择已有材料
-                      </button>
-                    </div>
-                  )}
-
-                  {setupOption === 'new' ? (
-                    <div className="space-y-2">
-                       <input 
-                        value={material.title}
-                        onChange={(e) => setMaterial(prev => ({ ...prev, title: e.target.value }))}
-                        placeholder="输入材料库名称 (例如: 2024高考模拟一)"
-                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500/50"
-                      />
-                      <p className="text-slate-400 text-xs">直接输入名称、上传音频及脚本即可建立新库。</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <select 
-                        value={currentMaterialId || ''}
-                        onChange={(e) => {
-                          const selected = materials.find(m => m.id === e.target.value);
-                          if (selected) {
-                            setMaterial(selected);
-                            setCurrentMaterialId(selected.id);
-                          }
-                        }}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500/50 appearance-none cursor-pointer"
-                      >
-                        <option value="" disabled className="bg-slate-900 text-slate-500">选择已有库材料...</option>
-                        {materials.map(m => (
-                          <option key={m.id} value={m.id} className="bg-slate-900 text-white">
-                            {m.title} {isAdmin ? ` - [${usersMap[m.ownerId || ''] || '未知'}]` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-slate-400 text-xs">选择已有材料库后，可以重新上传音频进行内容替换。</p>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3">音频文件 (MP3/WAV)</label>
-                    <div className="relative group">
-                      <input 
-                        type="file" 
-                        accept="audio/*" 
-                        onChange={handleAudioUpload}
-                        disabled={isUploading}
-                        className={cn(
-                          "absolute inset-0 w-full h-full opacity-0 z-10",
-                          isUploading ? "cursor-wait" : "cursor-pointer"
-                        )}
-                      />
-                      <div className={cn(
-                        "border border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center gap-4 bg-white/5 transition-all",
-                        !isUploading && "hover:bg-white/10 group-hover:border-blue-500/50"
-                      )}>
-                        <div className={cn(
-                          "w-14 h-14 bg-white/5 rounded-2xl flex items-center justify-center text-slate-400 transition-all shadow-inner",
-                          isUploading ? "animate-pulse bg-blue-600/20 text-blue-400" : "group-hover:bg-blue-600 group-hover:text-white"
-                        )}>
-                          <ListMusic size={28} />
-                        </div>
-                        <span className="text-sm font-medium text-slate-300">
-                          {isUploading ? "正在同步音频到云端..." : (material.audioUrl ? "音频已成功就绪 ✅" : "点击或拖拽上传音频")}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                       <div className="flex gap-6">
-                         <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-400">
-                           软件使用简易说明
-                         </div>
-                       </div>
-                    </div>
-
-                    <div className="min-h-[250px]">
-                      <div className="glass-dark border border-white/10 rounded-3xl p-8 space-y-8 text-lg text-slate-300 leading-relaxed shadow-2xl">
-                        <div className="space-y-3">
-                          <h4 className="text-white text-xl font-bold flex items-center gap-3 font-display"><CheckCircle2 size={24} className="text-blue-400" /> 1级：上传你的听力音频</h4>
-                          <p className="pl-9 text-slate-400 text-base">点击上方的蓝框，把你的 MP3 听力文件传上来。传好后会提示“就绪”。</p>
-                        </div>
-                        
-                        <div className="space-y-3">
-                          <h4 className="text-white text-xl font-bold flex items-center gap-3 font-display"><ArrowRight size={24} className="text-blue-400" /> 2级：标记你想练的题目</h4>
-                          <p className="pl-9 text-slate-400 text-base">点“下一步”，播放到某道题开始时，点一下“快速切割”。您可以给这题起个名字（比如：第1题）。</p>
-                        </div>
-
-                        <div className="space-y-3">
-                          <h4 className="text-white text-xl font-bold flex items-center gap-3 font-display"><Play size={24} className="text-blue-400" /> 3级：开启无限循环模式</h4>
-                          <p className="pl-9 text-slate-400 text-base">点“保存并训练”，想练哪题点哪题。还可以调慢速度，直到您完全听清每一个词！</p>
-                        </div>
-
-                        <div className="p-6 bg-blue-600/10 border border-blue-500/30 rounded-2xl">
-                          <p className="text-sm text-blue-300 font-bold">💡 提示：新手可以点击下方的“加载演示案例”先看一看是怎么用的。</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-4 space-y-3">
-                    {currentMaterialId && material.segments.length > 0 && (
-                      <button 
-                        onClick={() => setMode('train')}
-                        className="w-full h-14 bg-green-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-green-700 transition-all shadow-lg shadow-green-600/30"
-                      >
-                        直接开始训练 <Play size={20} />
-                      </button>
-                    )}
-
-                    <button 
-                      disabled={!material.audioUrl}
-                      onClick={() => setMode('edit')}
-                      className="w-full h-14 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-600/30"
-                    >
-                      {currentMaterialId ? '修改配置/分段' : '下一步：配置分段'} <ArrowRight size={20} />
-                    </button>
-
-                    {(isAdmin || (user && material.ownerId === user.id)) && currentMaterialId && (
-                      <button 
-                        onClick={(e) => deleteMaterial(currentMaterialId, e)}
-                        className="w-full h-12 text-red-500 hover:text-white text-sm font-bold transition-all flex items-center justify-center gap-2 bg-red-500/5 hover:bg-red-600 rounded-2xl border border-red-500/10 shadow-lg shadow-red-500/10"
-                      >
-                        <Trash2 size={18} /> 彻底删除此材料库
-                      </button>
-                    )}
-
-                    <button 
-                      onClick={() => {
-                        setMaterial({
-                          title: '演示：日常对话听力练习 (CDN)',
-                          audioUrl: 'https://cdn.pixabay.com/audio/2022/03/10/audio_c8c8a178af.mp3', // 这是一个环境谈话类的音频，非常适合听力练习演示
-                          script: '',
-                          segments: [
-                            { id: '1', label: '1. 引入环节', startTime: 0, endTime: 11, subtitle: '（环境背景音：日常谈话与背景杂音）\n欢迎来到 EchoMaster 听力训练演示。' },
-                            { id: '2', label: '2. 核心对话', startTime: 11, endTime: 25, subtitle: '**A**: Hi there! Can you help me with this?\n**B**: Sure, what do you need?\n**A**: I am looking for the main station.' },
-                            { id: '3', label: '3. 详细解释', startTime: 25, endTime: 40, subtitle: '**B**: Oh, it is just two blocks down that way.\n**A**: Thank you so much!\n**B**: You are welcome, have a nice day!' },
-                            { id: '4', label: '4. 练习结尾', startTime: 40, endTime: 55, subtitle: '（谈话逐渐减弱）\n这就是一个简单的分段示例，你可以点击下方的小卡片反复听这一段。' },
-                          ]
-                        });
-                        setMode('edit');
-                      }}
-                      className="w-full h-14 btn-glass text-slate-300 rounded-2xl font-bold flex items-center justify-center gap-2"
-                    >
-                      点击：加载演示案例
-                    </button>
-                    <p className="mt-2 text-[10px] text-slate-500 text-center">提示：如演示音频加载失败，请尝试刷新或上传本地音频文件。</p>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {mode === 'edit' && (
-            <motion.div 
-              key="edit"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-6"
-            >
-              {/* Toolbar with Title for Edit Mode */}
-              <div className="glass p-6 rounded-[32px] border-white/10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div className="flex-1 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Editing Folder:</span>
-                    {isSyncing && <span className="text-[8px] font-bold text-blue-400/60 animate-pulse bg-blue-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Syncing...</span>}
-                  </div>
-                  <input 
-                    value={material.title}
-                    onChange={(e) => setMaterial(p => ({ ...p, title: e.target.value }))}
-                    className="text-2xl font-black tracking-tighter text-white bg-transparent border-none focus:outline-none focus:ring-0 p-0 w-full"
-                    placeholder="输入文件夹名称..."
-                  />
-                </div>
-                <div className="flex items-center gap-3">
-                  <button 
-                    onClick={() => setMode('gallery')}
-                    className="px-6 py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl font-bold transition-all flex items-center gap-2 border border-white/10"
-                  >
-                    <ArrowLeft size={18} /> 返回材料库
-                  </button>
-                  <button 
-                    onClick={() => setMode('train')}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
-                  >
-                    <Save size={18} /> 保存并训练
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* Left: Player & Editor */}
-              <div className="lg:col-span-4 space-y-6">
-                <div className="glass p-6 rounded-[24px] space-y-6">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><Clock size={16} className="text-blue-400" /> 播放控制</h3>
                     <div className="flex gap-2">
                        <button 
-                         onClick={clearAllSegments}
-                         disabled={material.segments.length === 0}
-                         className="text-[10px] font-bold text-red-500 hover:text-red-400 flex items-center gap-1.5 transition-all uppercase tracking-widest disabled:opacity-30 p-2 glass rounded-lg border-red-500/20 active:bg-red-500/10"
-                       >
-                         <Trash2 size={12} /> 全部清空
-                       </button>
-                       <button 
-                         onClick={extractSegmentsFromScript}
-                         className="text-[10px] font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 transition-colors uppercase tracking-widest"
-                       >
-                         <CheckCircle2 size={12} /> 同步脚本
-                       </button>
-                    </div>
-                  </div>
-
-                  <div className="bg-black/20 rounded-[20px] p-6 space-y-4 border border-white/5 shadow-inner">
-                    <div className="space-y-2">
-                       <div className="flex justify-between text-[10px] font-mono text-slate-500 tracking-widest">
-                         <span className="text-blue-400">{formatTime(currentTime)}</span>
-                         <span>{formatTime(duration)}</span>
-                       </div>
-                       <input 
-                         type="range" 
-                         min="0" 
-                         max={duration} 
-                         value={currentTime}
-                         onChange={(e) => {
-                           if (audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
-                         }}
-                         className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                       />
-                    </div>
-
-                    <div className="flex items-center justify-center gap-6">
-                      <button onClick={() => skip(-10)} className="text-slate-500 hover:text-white transition-all active:scale-90"><Rewind size={20} /></button>
-                      <button onClick={togglePlay} className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg hover:scale-105 active:scale-95 transition-all">
-                        {isPlaying ? <Pause size={24} /> : <Play size={24} className="translate-x-1" />}
-                      </button>
-                      <button onClick={() => skip(10)} className="text-slate-500 hover:text-white transition-all active:scale-90"><FastForward size={20} /></button>
-                    </div>
-
-                    <div className="flex items-center gap-4 pt-4 border-t border-white/5">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">播放速度</span>
-                        <span className="text-xs font-mono font-bold text-blue-400">{playbackSpeed.toFixed(1)}x</span>
-                      </div>
-                      <input 
-                        type="range"
-                        min="0.5"
-                        max="2.5"
-                        step="0.1"
-                        value={playbackSpeed}
-                        onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                        className="flex-grow h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="glass p-6 rounded-[32px] space-y-6">
-                  <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><BookOpen size={16} className="text-blue-400" /> 脚本预览</h3>
-                  <div className="bg-black/20 rounded-[20px] p-6 text-slate-400 h-[500px] overflow-y-auto custom-scrollbar border border-white/5">
-                    <div className="max-w-none">
-                       {renderTranscript(true)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right: Segments Management */}
-              <div className="lg:col-span-8 flex flex-col h-full min-h-[600px]">
-                <div className="glass p-8 rounded-[32px] flex flex-col flex-grow border-white/10">
-                  <div className="flex items-center justify-between mb-8">
-                    <h3 className="font-bold text-white tracking-tight">题目分段管理</h3>
-                    <div className="flex gap-2">
-                      <button 
                         onClick={() => {
-                          setMaterial(prev => {
-                            const lastSegment = prev.segments[prev.segments.length - 1];
-                            const startTime = lastSegment ? lastSegment.endTime : 0;
-                            return {
-                              ...prev,
-                              segments: [...prev.segments, {
-                                id: crypto.randomUUID(),
-                                label: `题目 ${prev.segments.length + 1}`,
-                                startTime: currentTime,
-                                endTime: Math.min(currentTime + 5, duration),
-                                subtitle: ''
-                              }]
-                            };
-                          });
+                          setMaterial(m);
+                          setCurrentMaterialId(m.id!);
+                          setMode('train');
                         }}
-                        title="在当前时间新增分段"
-                        className="w-10 h-10 btn-glass rounded-xl flex items-center justify-center text-blue-400 border-blue-500/20"
+                        className="flex-1 bg-blue-600/10 text-blue-400 py-3 rounded-xl font-bold hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center gap-2"
                       >
-                        <Plus size={20} />
+                        <Play size={16}/> 开始练习
                       </button>
-                      <button 
-                        onClick={() => {
-                          setMaterial(prev => {
-                            const newSegments = [...prev.segments];
-                            if (newSegments.length > 0) {
-                              const lastIdx = newSegments.length - 1;
-                              // Update previous segment's end time to current time
-                              newSegments[lastIdx].endTime = currentTime;
-                            }
-                            // Add new segment starting at current time
-                            newSegments.push({
-                              id: crypto.randomUUID(),
-                              label: `题目 ${newSegments.length + 1}`,
-                              startTime: currentTime,
-                              endTime: Math.min(currentTime + 5, duration),
-                              subtitle: ''
-                            });
-                            return { ...prev, segments: newSegments };
-                          });
-                        }}
-                        title="手动切割（设当前时间为上段落结束及新段落开始）"
-                        className="px-3 py-2 btn-glass rounded-xl text-xs font-bold text-blue-400 flex items-center gap-1 border-blue-500/20"
-                      >
-                        <RotateCcw size={14} className="rotate-90" /> 快速切割
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex-grow space-y-4 overflow-y-auto pr-2 custom-scrollbar">
-                    {material.segments.map((seg, idx) => (
-                      <div key={seg.id} className="p-4 bg-white/5 border border-white/5 rounded-2xl group hover:border-white/10 transition-all space-y-3">
-                        <div className="flex items-center justify-between">
-                          <input 
-                            value={seg.label}
-                            onChange={(e) => {
-                              const newSegs = [...material.segments];
-                              newSegs[idx].label = e.target.value;
-                              setMaterial(p => ({ ...p, segments: newSegs }));
-                            }}
-                            className="text-sm font-bold bg-transparent border-none focus:outline-none focus:ring-0 text-white w-2/3"
-                          />
-                          <button 
-                            onClick={() => {
-                              setMaterial(p => {
-                                const remaining = p.segments.filter(s => s.id !== seg.id);
-                                const reindexed = remaining.map((s, i) => ({
-                                  ...s,
-                                  label: `题目 ${i + 1}`
-                                }));
-                                return { ...p, segments: reindexed };
-                              });
-                            }}
-                            className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                        
-                        <textarea
-                          placeholder="输入本段字幕/内容..."
-                          value={seg.subtitle || ''}
-                          onChange={(e) => {
-                            const newSegs = [...material.segments];
-                            newSegs[idx].subtitle = e.target.value;
-                            setMaterial(p => ({ ...p, segments: newSegs }));
-                          }}
-                          className="w-full bg-black/20 border border-white/5 rounded-lg p-4 text-sm text-slate-300 placeholder:text-slate-600 focus:border-blue-500/30 outline-none resize-none h-48"
-                        />
-                        <div className="flex items-center gap-4">
-                          <div className="flex-grow grid grid-cols-2 gap-3 text-[10px] font-mono">
-                             <div className="space-y-1.5">
-                               <span className="text-slate-500 font-bold tracking-widest text-xs">START</span>
-                               <input 
-                                 type="number" step="1" 
-                                 value={Math.floor(seg.startTime)}
-                                 onChange={(e) => {
-                                   const newSegs = [...material.segments];
-                                   newSegs[idx].startTime = parseFloat(e.target.value);
-                                   setMaterial(p => ({ ...p, segments: newSegs }));
-                                 }}
-                                 className="w-full p-3 bg-black/20 border border-white/10 rounded-xl text-white focus:border-blue-500/50 outline-none text-base"
-                               />
-                             </div>
-                             <div className="space-y-1.5">
-                               <span className="text-slate-500 font-bold tracking-widest text-xs">END</span>
-                               <input 
-                                 type="number" step="1"
-                                 value={Math.floor(seg.endTime)} 
-                                 onChange={(e) => {
-                                   const newSegs = [...material.segments];
-                                   newSegs[idx].endTime = parseFloat(e.target.value);
-                                   setMaterial(p => ({ ...p, segments: newSegs }));
-                                 }}
-                                 className="w-full p-3 bg-black/20 border border-white/10 rounded-xl text-white focus:border-blue-500/50 outline-none text-base"
-                               />
-                             </div>
-                          </div>
-                          <button 
-                            onClick={() => {
-                              if (audioRef.current) audioRef.current.currentTime = seg.startTime;
-                              setIsPlaying(true);
-                              audioRef.current?.play();
-                            }}
-                            className="w-10 h-10 bg-blue-600/10 border border-blue-500/30 rounded-xl flex items-center justify-center text-blue-400 hover:bg-blue-600 hover:text-white transition-all shadow-lg"
-                          >
-                            <Play size={16} className="translate-x-0.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="pt-8 mt-auto border-t border-white/10">
-                    <button 
-                      onClick={() => setMode('train')}
-                      className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/30 hover:bg-blue-700 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
-                    >
-                      <Save size={20} /> 完成配置，开始训练
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            </motion.div>
-          )}
-
-          {mode === 'train' && (
-            <motion.div 
-               key="train"
-               initial={{ opacity: 0, y: 20 }}
-               animate={{ opacity: 1, y: 0 }}
-               exit={{ opacity: 0, y: -20 }}
-               className="max-w-7xl mx-auto space-y-8"
-            >
-              {/* Top: Global Player */}
-              <div className="glass p-8 rounded-[40px] border-white/10 shadow-2xl relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-30" />
-                
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3">
-                        <span className="text-[9px] font-black text-blue-500 uppercase tracking-[0.4em]">Integrated Listening System</span>
-                        {isSyncing ? (
-                          <span className="text-[8px] font-bold text-blue-400/60 animate-pulse bg-blue-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Saving...</span>
-                        ) : lastSaved && (
-                          <span className="text-[8px] font-medium text-slate-500 uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded-full">Synced {lastSaved}</span>
-                        )}
-                      </div>
-                    <div className="flex items-center gap-3">
-                        <input 
-                          value={material.title}
-                          onChange={(e) => setMaterial(p => ({ ...p, title: e.target.value }))}
-                          className="text-3xl font-black tracking-tighter text-white leading-tight bg-transparent border-none focus:outline-none focus:ring-0 p-0 flex-1 min-w-0"
-                          placeholder="输入听力材料标题..."
-                        />
-                        {(isAdmin || (user && material.ownerId === user.id)) && currentMaterialId && (
-                           <button 
-                             onClick={(e) => deleteMaterial(currentMaterialId, e)}
-                             className="p-2 text-red-500/50 hover:text-red-500 transition-colors bg-red-500/5 rounded-xl border border-red-500/10 shrink-0"
-                             title="彻底删除整库"
-                           >
-                             <Trash2 size={24} />
-                           </button>
-                        )}
-                      </div>
-                    </div>
-
-
-
-                    <div className="flex items-center gap-6 glass-dark p-4 rounded-3xl border-white/5">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest leading-none">PLAYBACK SPEED</span>
-                        <span className="text-sm font-mono font-bold text-blue-400">{playbackSpeed.toFixed(1)}x</span>
-                      </div>
-                      <input 
-                        type="range"
-                        min="0.5"
-                        max="2.5"
-                        step="0.1"
-                        value={playbackSpeed}
-                        onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                        className="w-40 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="bg-black/30 rounded-[32px] p-8 border border-white/5 shadow-inner">
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-10 items-center">
-                      {/* Left info */}
-                      <div className="hidden md:flex flex-col gap-2">
-                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">CURRENT FOCUS</span>
-                        <p className="text-white font-bold truncate">
-                          {activeSegmentIndex !== null ? material.segments[activeSegmentIndex].label : "自由浏览中..."}
-                        </p>
-                      </div>
-
-                      {/* Center Controls */}
-                        <div className="flex flex-col items-center gap-6">
-                          {!material.audioUrl ? (
-                            <div className="flex flex-col items-center gap-4">
-                              <p className="text-sm text-yellow-500 font-bold">此文件夹包含配置但未加载音频</p>
-                              <label className="px-6 py-3 bg-blue-600 text-white rounded-2xl font-bold cursor-pointer hover:bg-blue-500 transition-all shadow-xl shadow-blue-600/20">
-                                <Upload size={18} className="inline mr-2" /> 选择音频文件开始训练
-                                <input type="file" accept="audio/*" className="hidden" onChange={handleAudioUpload} />
-                              </label>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-10">
-                              <button onClick={() => skip(-10)} className="w-16 h-16 rounded-full flex items-center justify-center text-slate-400 glass hover:text-white transition-all bg-white/5">
-                                <Rewind size={32} />
-                              </button>
-                              <button 
-                                onClick={togglePlay} 
-                                className="w-28 h-28 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_0_50px_rgba(37,99,235,0.5)] hover:scale-105 active:scale-95 transition-all"
-                              >
-                                {isPlaying ? <Pause size={48} /> : <Play size={48} className="translate-x-1.5" />}
-                              </button>
-                              <button onClick={() => skip(10)} className="w-16 h-16 rounded-full flex items-center justify-center text-slate-400 glass hover:text-white transition-all bg-white/5">
-                                <FastForward size={32} />
-                              </button>
-                            </div>
-                          )}
-
-                        <div className="w-full max-w-sm space-y-2">
-                          <input 
-                             type="range" 
-                             min="0" 
-                             max={duration} 
-                             value={currentTime}
-                             onChange={(e) => {
-                               if (audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
-                             }}
-                             className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                           />
-                           <div className="flex justify-between text-[10px] font-mono font-bold">
-                             <span className="text-blue-500">{formatTime(currentTime)}</span>
-                             <span className="text-slate-600">{formatTime(duration)}</span>
-                           </div>
-                        </div>
-                      </div>
-
-                      {/* Right decoration */}
-                      <div className="hidden md:flex items-center justify-end gap-1 px-4 h-12">
-                        {[...Array(12)].map((_, i) => (
-                          <motion.div 
-                            key={i}
-                            animate={{ height: isPlaying ? [10, 30, 15, 40, 20][i % 5] : 4 }}
-                            transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                            className="w-1 bg-blue-500/40 rounded-full"
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Bottom: Splits Display */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* Left-Bottom: Topic List */}
-                <div className="lg:col-span-4 space-y-4">
-                  <div className="glass p-6 rounded-[32px] border-white/10 space-y-6 min-h-[400px]">
-                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
-                      <ListMusic size={16} className="text-blue-500" /> 题目库
-                    </h3>
-                    <div className="space-y-2 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
-                      {material.segments.map((seg, idx) => (
+                      {(isAdmin || (user && m.ownerId === user.id)) && (
                         <button 
-                          key={seg.id}
                           onClick={() => {
-                            if (audioRef.current) audioRef.current.currentTime = seg.startTime;
-                            setIsPlaying(true);
-                            audioRef.current?.play();
+                            setMaterial(m);
+                            setCurrentMaterialId(m.id!);
+                            setMode('edit');
                           }}
-                          className={cn(
-                            "w-full px-6 py-6 rounded-3xl flex items-center justify-between border transition-all text-left group",
-                            activeSegmentIndex === idx 
-                              ? "bg-blue-600/30 border-blue-500 text-white shadow-xl shadow-blue-500/10 ring-4 ring-blue-500/20" 
-                              : "bg-white/5 border-white/10 text-slate-400 hover:border-white/30"
-                          )}
+                          className="px-4 bg-white/5 text-slate-400 py-3 rounded-xl hover:bg-white/10"
                         >
-                          <div className="flex items-center gap-4">
-                            <span className={cn(
-                              "w-10 h-10 rounded-xl flex items-center justify-center text-lg font-black",
-                              activeSegmentIndex === idx ? "bg-blue-500 text-white" : "bg-white/10 text-slate-500 font-mono"
-                            )}>{idx + 1}</span>
-                            <span className="text-xl font-bold">{seg.label}</span>
-                          </div>
-                          <span className="text-sm font-mono opacity-50 bg-black/20 px-2 py-1 rounded-lg">{formatTime(seg.startTime)}</span>
+                          <Settings2 size={16}/>
                         </button>
-                      ))}
+                      )}
                     </div>
                   </div>
-                </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
 
-                {/* Right-Bottom: Focused Transcript */}
-                <div className="lg:col-span-8">
-                  <div className="glass p-8 rounded-[40px] border-white/10 flex flex-col min-h-[400px]">
-                    <div className="flex items-center justify-between mb-8 pb-4 border-b border-white/5">
-                      <div className="flex items-center gap-3">
-                        <BookOpen size={20} className="text-blue-400" />
-                        <h3 className="font-bold text-white">当前题目内容</h3>
-                      </div>
-                      
-                      <div className="flex items-center gap-3">
-                        <button 
-                          onClick={() => setShowSubtitles(!showSubtitles)}
-                          className={cn(
-                            "px-4 py-2 text-[10px] font-bold rounded-xl transition-all border",
-                            showSubtitles ? "bg-blue-600 border-blue-500 text-white" : "btn-glass border-white/5 text-slate-500"
-                          )}
-                        >
-                          显示字幕：{showSubtitles ? "开" : "关"}
-                        </button>
-                      </div>
+          {/* 编辑模式 (简易版) */}
+          {mode === 'edit' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+               <div className="bg-[#1e293b] border border-white/10 p-8 rounded-[40px] space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-bold">编辑材料: {material.title}</h2>
+                    <button onClick={() => setMode('gallery')} className="text-slate-500 hover:text-white">取消</button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs text-slate-500 uppercase font-bold tracking-widest">音频直链 (URL)</label>
+                      <input 
+                        type="text"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 outline-none focus:border-blue-500"
+                        value={material.audioUrl}
+                        onChange={e => setMaterial({...material, audioUrl: e.target.value})}
+                        placeholder="https://example.com/audio.mp3"
+                      />
                     </div>
-                    
-                    <div ref={transcriptRef} className="flex-grow overflow-y-auto custom-scrollbar">
-                       {renderTranscript(true)}
+                    <div className="space-y-2">
+                      <label className="text-xs text-slate-500 uppercase font-bold tracking-widest">听力原文</label>
+                      <textarea 
+                        className="w-full h-32 bg-white/5 border border-white/10 rounded-xl px-4 py-3 outline-none focus:border-blue-500"
+                        value={material.script}
+                        onChange={e => setMaterial({...material, script: e.target.value})}
+                        placeholder="粘贴听力原文字幕..."
+                      />
                     </div>
                   </div>
+
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={saveToCloud}
+                      disabled={isSyncing}
+                      className="flex-1 bg-blue-600 py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-blue-500"
+                    >
+                      <Save size={20}/> {isSyncing ? '同步中...' : '提交保存'}
+                    </button>
+                    <button 
+                      onClick={addSegment}
+                      className="px-6 bg-white/5 border border-white/10 rounded-2xl font-bold hover:bg-white/10 flex items-center gap-2"
+                    >
+                      <Plus size={20}/> 新增分段
+                    </button>
+                  </div>
+               </div>
+
+               <div className="grid gap-4">
+                 {material.segments.map((seg, idx) => (
+                   <div key={seg.id} className="bg-[#1e293b] border border-white/10 p-6 rounded-3xl grid grid-cols-1 md:grid-cols-4 gap-4">
+                     <input 
+                        value={seg.label}
+                        onChange={e => {
+                          const newSegs = [...material.segments];
+                          newSegs[idx].label = e.target.value;
+                          setMaterial({...material, segments: newSegs});
+                        }}
+                        className="bg-transparent border-b border-white/10 outline-none font-bold"
+                     />
+                     <div className="flex gap-2">
+                        <input type="number" value={seg.startTime} step="0.1" onChange={e => {
+                          const newSegs = [...material.segments];
+                          newSegs[idx].startTime = parseFloat(e.target.value);
+                          setMaterial({...material, segments: newSegs});
+                        }} className="w-full bg-white/5 p-2 rounded-lg text-xs" />
+                        <input type="number" value={seg.endTime} step="0.1" onChange={e => {
+                          const newSegs = [...material.segments];
+                          newSegs[idx].endTime = parseFloat(e.target.value);
+                          setMaterial({...material, segments: newSegs});
+                        }} className="w-full bg-white/5 p-2 rounded-lg text-xs" />
+                     </div>
+                     <textarea 
+                        value={seg.subtitle}
+                        onChange={e => {
+                          const newSegs = [...material.segments];
+                          newSegs[idx].subtitle = e.target.value;
+                          setMaterial({...material, segments: newSegs});
+                        }}
+                        className="md:col-span-2 bg-white/5 p-3 rounded-xl text-sm outline-none focus:border-blue-500/40 border border-transparent"
+                        placeholder="该分段显示的字幕..."
+                     />
+                   </div>
+                 ))}
+               </div>
+            </motion.div>
+          )}
+
+          {/* 训练模式界面 */}
+          {mode === 'train' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+              {/* 播放器核心 */}
+              <div className="bg-[#1e293b] border border-white/10 p-8 rounded-[40px] text-center">
+                <h2 className="text-2xl font-black mb-6">{material.title}</h2>
+                <div className="flex items-center justify-center gap-8 mb-8">
+                  <button onClick={() => skip(-10)} className="p-4 text-slate-500 hover:text-white"><Rewind size={32}/></button>
+                  <button onClick={togglePlay} className="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-xl">
+                    {isPlaying ? <Pause size={48}/> : <Play size={48} className="translate-x-1"/>}
+                  </button>
+                  <button onClick={() => skip(10)} className="p-4 text-slate-500 hover:text-white"><FastForward size={32}/></button>
+                </div>
+                <div className="max-w-md mx-auto">
+                   <p className="text-blue-400 font-mono text-xl mb-2">{formatTime(currentTime)} / {formatTime(duration)}</p>
+                   <input 
+                    type="range" min="0" max={duration} value={currentTime} 
+                    onChange={e => audioRef.current && (audioRef.current.currentTime = parseFloat(e.target.value))}
+                    className="w-full h-2 bg-white/10 rounded-full accent-blue-500"
+                   />
+                </div>
+              </div>
+
+              {/* 题目列表 */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-[#1e293b] border border-white/10 p-6 rounded-3xl h-[400px] overflow-y-auto">
+                  <h3 className="text-sm font-bold text-slate-500 uppercase mb-4 tracking-widest">题目分段</h3>
+                  {material.segments.map((seg, idx) => (
+                    <button 
+                      key={seg.id} 
+                      onClick={() => audioRef.current && (audioRef.current.currentTime = seg.startTime)}
+                      className={cn(
+                        "w-full text-left p-4 mb-2 rounded-xl border transition-all",
+                        activeSegmentIndex === idx ? "bg-blue-600/20 border-blue-500" : "bg-white/5 border-transparent"
+                      )}
+                    >
+                      <div className="font-bold">{seg.label}</div>
+                      <div className="text-[10px] opacity-50 font-mono">{formatTime(seg.startTime)} - {formatTime(seg.endTime)}</div>
+                    </button>
+                  ))}
+                </div>
+                
+                <div className="md:col-span-2 bg-[#1e293b] border border-white/10 p-8 rounded-3xl min-h-[400px]">
+                   <div className="flex items-center justify-between mb-6">
+                     <h3 className="font-bold flex items-center gap-2"><BookOpen size={18}/> 听力原文/字幕</h3>
+                     <button onClick={() => setShowSubtitles(!showSubtitles)} className="text-xs text-blue-400">
+                       {showSubtitles ? '隐藏字幕' : '显示字幕'}
+                     </button>
+                   </div>
+                   <div className="text-2xl font-bold leading-relaxed text-slate-300">
+                     {showSubtitles ? (
+                       activeSegmentIndex !== null ? material.segments[activeSegmentIndex].subtitle : "点击左侧题目开始练习"
+                     ) : "🔒 字幕已隐藏"}
+                   </div>
                 </div>
               </div>
             </motion.div>
@@ -1683,36 +529,28 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {material.audioUrl && (
-        <audio 
-          ref={audioRef}
-          src={material.audioUrl}
-          crossOrigin="anonymous"
-          onError={() => {
-            // Do not log the full event object to avoid circular structure issues
-            console.error("Audio Error for URL:", material.audioUrl);
-            if (material.audioUrl?.startsWith('blob:')) {
-              alert("音频预览已过期或文件未找到，请重新上传。");
-            }
-          }}
-        />
-      )}
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #E5E5E5;
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #D4D4D4;
-        }
-      `}</style>
+      {/* 隐藏的音频组件 */}
+      <audio 
+        ref={audioRef} 
+        src={material.audioUrl} 
+        onTimeUpdate={() => {
+          if (!audioRef.current) return;
+          const time = audioRef.current.currentTime;
+          setCurrentTime(time);
+          const idx = material.segments.findIndex(s => time >= s.startTime && time <= s.endTime);
+          setActiveSegmentIndex(idx === -1 ? null : idx);
+        }}
+        onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+      />
     </div>
   );
+}
+
+// --- 辅助函数 ---
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }

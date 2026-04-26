@@ -15,60 +15,116 @@ import {
   CheckCircle2,
   ListMusic,
   ArrowRight,
-  Save
+  Save,
+  LogOut,
+  User as UserIcon,
+  HelpCircle,
+  FileText,
+  Search,
+  Library as LibraryIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { AudioSegment, ListeningMaterial } from './types';
+import { AudioSegment, ListeningMaterial, User } from './types';
+import { api } from './services/api';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const INSTRUCTIONS_SCRIPT = `
+## 🚀 软件使用说明 (EchoMaster Pro)
+
+本软件专为英语教师和学生设计，旨在提供沉浸式的听力训练和材料制作体验。
+
+### 1. 准备阶段 (设置)
+- **上传音频**: 支持 MP3/WAV 格式。由于网络环境优化，音频仅在本地处理，速度极快。
+- **输入脚本**: 在文字区域粘贴听力文稿。
+- **智能标识**: 在对话或题目开始处加入时间戳，如 \`[00:15]\`，系统将自动识别并切分题目。
+
+### 2. 素材制作 (分段)
+- **快速切割**: 播放音频并在题目切换点点击“快速切割”，可实时捕捉时间点。
+- **内容微调**: 为每一段添加详细的原文或重点词汇。
+- **同步保存**: 点击保存图标，您的作品将同步至云端材料库。
+
+### 3. 课堂/训练 (练习)
+- **倍速调节**: 支持 0.5x 到 2.5x 的精细调节，适应不同学段。
+- **循环播放**: 可通过题目列表快速跳转，反复磨耳朵。
+- **交互跟随**: 播放时，对应的脚本内容会自动高亮显示。
+
+### 4. 共享与管理 (库)
+- **全员共享**: 所有用户上传的材料在“共享材料库”中均可见。
+- **多端同步**: 账号登录后，您在办公室制作的材料可直接在希沃白板上打开。
+- **账号管理**: 由管理员分配账号，确保教学环境的纯净与安全。
+`;
+
 export default function App() {
-  const [mode, setMode] = useState<'setup' | 'edit' | 'train'>('setup');
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoadingUser, setIsLoadingUser] = useState(true);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+
+  const [mode, setMode] = useState<'setup' | 'edit' | 'train' | 'library' | 'users'>('setup');
   const [material, setMaterial] = useState<ListeningMaterial>({
     title: '未命名听力材料',
     audioUrl: '',
-    script: '',
+    script: INSTRUCTIONS_SCRIPT,
     segments: [],
   });
 
+  const [library, setLibrary] = useState<ListeningMaterial[]>([]);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
 
-  // Persistence: Load from localStorage on mount
+  // Auth Hook
   useEffect(() => {
-    const saved = localStorage.getItem('echomaster_material');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Note: Blob URLs won't persist across refreshes, so we'll need to warn if audioUrl is present but invalid
-        setMaterial(parsed);
-      } catch (e) {
-        console.error("Persistence Load Error", e);
-      }
-    }
+    api.getMe().then(u => {
+      setUser(u);
+      setIsLoadingUser(false);
+      if (u) loadLibrary();
+    });
   }, []);
 
-  // Persistence: Save function
-  const manualSave = () => {
-    localStorage.setItem('echomaster_material', JSON.stringify(material));
-    setLastSaved(new Date().toLocaleTimeString());
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    try {
+      const u = await api.login(loginForm.username, loginForm.password);
+      setUser(u);
+      loadLibrary();
+    } catch (err: any) {
+      setLoginError(err.message);
+    }
   };
 
-  // Auto-save debounced or just on change for safer experience
-  useEffect(() => {
-    if (material.audioUrl || material.script || material.segments.length > 0) {
-      const timer = setTimeout(() => {
-        localStorage.setItem('echomaster_material', JSON.stringify(material));
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [material]);
+  const handleLogout = async () => {
+    await api.logout();
+    setUser(null);
+    setMode('setup');
+  };
 
+  const loadLibrary = async () => {
+    try {
+      const materials = await api.getMaterials();
+      setLibrary(materials);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const manualSave = async () => {
+    if (!user) return;
+    try {
+      const { id } = await api.saveMaterial(material);
+      setMaterial(prev => ({ ...prev, id }));
+      setLastSaved(new Date().toLocaleTimeString());
+      loadLibrary();
+    } catch (err) {
+      alert("保存失败，请重试");
+    }
+  };
 
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -79,6 +135,20 @@ export default function App() {
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [syncScroll, setSyncScroll] = useState(true);
   const transcriptRef = useRef<HTMLDivElement>(null);
+
+  const [users, setUsers] = useState<User[]>([]);
+  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as any });
+
+  const loadUsers = async () => {
+    try {
+      const u = await api.getUsers();
+      setUsers(u);
+    } catch (err) {}
+  };
+
+  useEffect(() => {
+    if (mode === 'users') loadUsers();
+  }, [mode]);
 
   // File Upload Handlers
   const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -108,7 +178,6 @@ export default function App() {
     }
   };
 
-  // Auto-segmentation helper (based on time markers in text like [00:12])
   const extractSegmentsFromScript = () => {
     const regex = /\[(\d{1,2}):(\d{2})\]/g;
     const matches = Array.from(material.script.matchAll(regex));
@@ -121,7 +190,6 @@ export default function App() {
         ? parseInt(nextMatch[1]) * 60 + parseInt(nextMatch[2]) 
         : duration || startSec + 30;
       
-      // Get text between this timestamp and next
       const startIndex = match.index! + match[0].length;
       const endIndex = nextMatch ? nextMatch.index : material.script.length;
       const content = material.script.substring(startIndex, endIndex).trim();
@@ -137,14 +205,10 @@ export default function App() {
     setMaterial(prev => ({ ...prev, segments: newSegments }));
   };
 
-  // 1. Clear all segments with a safer implementation
   const clearAllSegments = () => {
-    setMaterial(prev => ({
-      ...prev,
-      segments: []
-    }));
+    setMaterial(prev => ({ ...prev, segments: [] }));
     setActiveSegmentIndex(null);
-    setCurrentTime(0); // Reset time to start to ensure clean state
+    setCurrentTime(0);
     if (audioRef.current) audioRef.current.currentTime = 0;
   };
 
@@ -154,8 +218,6 @@ export default function App() {
 
     const handleTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
-      
-      // Check for segment changes in training mode
       if (mode === 'train') {
         const currentIdx = material.segments.findIndex(
           seg => audio.currentTime >= seg.startTime && audio.currentTime < seg.endTime
@@ -166,9 +228,7 @@ export default function App() {
       }
     };
 
-    const handleLoadedMetadata = () => {
-      setDuration(audio.duration);
-    };
+    const handleLoadedMetadata = () => setDuration(audio.duration);
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
@@ -181,7 +241,6 @@ export default function App() {
     };
   }, [material.segments, mode, activeSegmentIndex]);
 
-  // Handle auto-scroll to active segment
   useEffect(() => {
     if (mode === 'train' && syncScroll && activeSegmentIndex !== null && transcriptRef.current) {
       const activeElement = transcriptRef.current.querySelector(`[data-segment-index="${activeSegmentIndex}"]`);
@@ -192,16 +251,11 @@ export default function App() {
   }, [activeSegmentIndex, mode, syncScroll]);
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = playbackSpeed;
-    }
+    if (audioRef.current) audioRef.current.playbackRate = playbackSpeed;
   }, [playbackSpeed]);
 
-  const formatTime = (time: number) => {
-    return `${Math.floor(time)}s`;
-  };
+  const formatTime = (time: number) => `${Math.floor(time)}s`;
 
-  // Helper to render script with highlighting
   const renderTranscript = (onlyActive: boolean = false) => {
     let items = material.segments.map((seg, idx) => ({
       index: idx,
@@ -210,29 +264,23 @@ export default function App() {
       endTime: seg.endTime
     }));
 
-    if (onlyActive && activeSegmentIndex !== null) {
-      items = [items[activeSegmentIndex]];
-    }
+    if (onlyActive && activeSegmentIndex !== null) items = [items[activeSegmentIndex]];
 
     if (items.length === 0 || (onlyActive && activeSegmentIndex === null)) {
       return (
-        <div className="flex flex-col items-center justify-center h-full text-slate-600 italic py-10 opacity-40">
-          <BookOpen size={48} className="mb-4" />
-          <p>{onlyActive ? "点击播放题目查看内容" : "暂无分段内容"}</p>
+        <div className="flex flex-col items-center justify-center h-full text-slate-400 italic py-10 opacity-60">
+          <BookOpen size={64} className="mb-4 text-blue-500" />
+          <p className="text-xl">{onlyActive ? "点击播放题目查看内容" : "暂无分段内容"}</p>
         </div>
       );
     }
     
     return (
-      <div className={cn("flex flex-col w-full", onlyActive ? "gap-4" : "gap-12 py-10")}>
-        {items.map((item, idx) => {
+      <div className={cn("flex flex-col w-full", onlyActive ? "gap-6" : "gap-16 py-10")}>
+        {items.map((item) => {
           const isActive = onlyActive ? true : item.index === activeSegmentIndex;
-          // Preserve line breaks by splitting by newline first
           const lines = item.text.split('\n');
-          const duration = item.endTime - item.startTime;
-          
-          // Calculate cumulative word count for highlighting across lines if needed
-          // But for simplicity, we can just highlight based on time relative to this segment
+          const segmentDuration = item.endTime - item.startTime;
           const totalWords = item.text.split(/\s+/).filter(Boolean).length;
           let currentWordGlobalIdx = 0;
 
@@ -241,44 +289,32 @@ export default function App() {
               key={item.index}
               data-segment-index={item.index}
               initial={false}
-              animate={{ 
-                opacity: showSubtitles ? (isActive ? 1 : 0.3) : 0,
-                x: isActive ? 4 : 0,
-              }}
+              animate={{ opacity: showSubtitles ? (isActive ? 1 : 0.3) : 0, scale: isActive ? 1.02 : 1 }}
               transition={{ type: 'spring', stiffness: 200, damping: 25 }}
               className={cn(
                 "w-full text-left transition-all duration-500 whitespace-pre-wrap",
-                onlyActive ? "px-0" : "px-0 py-2",
                 isActive ? "text-white" : "text-slate-500"
               )}
             >
               {lines.map((line, lIdx) => {
-                const words = line.split(/(\s+)/); // Keep the spaces to maintain formatting
+                const words = line.split(/(\s+)/);
                 return (
                   <div key={lIdx} className="flex flex-wrap">
                     {words.map((word, wIdx) => {
                       if (word.trim() === '') return <span key={wIdx}>{word}</span>;
-                      
                       const wordIdxInLine = currentWordGlobalIdx++;
                       let isWordActive = false;
-                      if (isActive && duration > 0 && totalWords > 0) {
+                      if (isActive && segmentDuration > 0 && totalWords > 0) {
                         const elapsed = currentTime - item.startTime;
-                        const wordProgress = (elapsed / duration) * totalWords;
+                        const wordProgress = (elapsed / segmentDuration) * totalWords;
                         isWordActive = wordIdxInLine <= wordProgress;
                       }
-
                       return (
                         <motion.span
                           key={wIdx}
                           initial={false}
-                          animate={{
-                            color: isActive && isWordActive ? '#60a5fa' : 'inherit',
-                            scale: isActive && isWordActive ? 1.05 : 1,
-                          }}
-                          className={cn(
-                            "text-base md:text-lg font-medium inline-block",
-                            isActive && isWordActive ? "font-bold" : ""
-                          )}
+                          animate={{ color: isActive && isWordActive ? '#60a5fa' : 'inherit' }}
+                          className={cn("text-2xl md:text-3xl font-medium inline-block", isActive && isWordActive ? "font-bold" : "")}
                         >
                           {word}
                         </motion.span>
@@ -294,583 +330,612 @@ export default function App() {
     );
   };
 
+  if (isLoadingUser) {
+    return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white font-bold text-2xl">正在加载...</div>;
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen app-bg flex items-center justify-center p-6">
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="glass p-12 rounded-[40px] max-w-md w-full shadow-2xl border-white/20">
+          <div className="text-center mb-8">
+            <div className="w-20 h-20 bg-blue-600 rounded-[28px] flex items-center justify-center text-white font-black text-3xl shadow-xl shadow-blue-600/30 mx-auto mb-6">E</div>
+            <h1 className="text-3xl font-black text-white tracking-tighter">EchoMaster Pro</h1>
+            <p className="text-slate-400 font-medium mt-2">请登录教学账号</p>
+          </div>
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">用户名</label>
+              <input 
+                type="text" 
+                value={loginForm.username} 
+                onChange={e => setLoginForm(p => ({...p, username: e.target.value}))}
+                className="w-full h-14 bg-white/5 border border-white/10 rounded-2xl px-5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all font-medium"
+                placeholder="Account"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">密码</label>
+              <input 
+                type="password" 
+                value={loginForm.password} 
+                onChange={e => setLoginForm(p => ({...p, password: e.target.value}))}
+                className="w-full h-14 bg-white/5 border border-white/10 rounded-2xl px-5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all font-medium"
+                placeholder="••••••••"
+              />
+            </div>
+            {loginError && <p className="text-red-500 text-sm font-medium ml-1">{loginError}</p>}
+            <button className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-lg shadow-lg shadow-blue-800/20 active:scale-[0.98] transition-all pt-1">登 录</button>
+          </form>
+          <div className="mt-8 pt-8 border-t border-white/10 text-center">
+            <p className="text-slate-500 text-xs">如有账号问题，请联系系统管理员</p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen font-sans selection:bg-blue-500/30 selection:text-white">
+    <div className="min-h-screen font-sans selection:bg-blue-500/30 selection:text-white pb-20">
+      <audio ref={audioRef} src={material.audioUrl} />
+      
       {/* Header */}
       <header className="sticky top-0 z-50 glass border-b border-white/10">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold shadow-lg shadow-blue-600/30">
-              E
-            </div>
+        <div className="max-w-[1600px] mx-auto px-8 h-24 flex items-center justify-between">
+          <div className="flex items-center gap-6">
+            <div className="w-14 h-14 bg-blue-600 rounded-[20px] flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-blue-600/30">E</div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-white leading-none">EchoMaster Pro</h1>
-              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.2em] mt-1">High School Listening Lab</p>
+              <h1 className="text-2xl font-black tracking-tighter text-white leading-none">EchoMaster Pro</h1>
+              <div className="flex items-center gap-3 mt-2">
+                <span className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.3em]">Listening Lab</span>
+                <div className="w-1 h-1 bg-slate-700 rounded-full" />
+                <div className="flex items-center gap-1.5 text-slate-400">
+                  <UserIcon size={12} className="text-blue-500" />
+                  <span className="text-xs font-bold">{user.username} {user.role === 'admin' ? '(管理员)' : ''}</span>
+                </div>
+              </div>
             </div>
           </div>
 
-          <nav className="flex items-center gap-3">
-            {lastSaved && (
-              <span className="text-[10px] font-bold text-green-500 uppercase tracking-tighter opacity-70">
-                {lastSaved} 已保存
-              </span>
+          <nav className="flex items-center gap-4">
+            {user.role === 'admin' && (
+              <button 
+                onClick={() => setMode('users')}
+                className={cn(
+                  "px-8 h-14 text-base font-bold transition-all rounded-2xl flex items-center gap-3",
+                  mode === 'users' ? "bg-blue-600 text-white shadow-xl shadow-blue-600/20" : "btn-glass text-slate-300"
+                )}
+              >
+                <UserIcon size={20} /> 账号管理
+              </button>
             )}
             <button 
-              onClick={manualSave}
-              className="btn-glass p-2.5 rounded-xl text-blue-400 hover:text-white transition-all group"
-              title="保存当前进度"
+              onClick={() => { loadLibrary(); setMode('library'); }}
+              className={cn(
+                "px-8 h-14 text-base font-bold transition-all rounded-2xl flex items-center gap-3",
+                mode === 'library' ? "bg-blue-600 text-white shadow-xl shadow-blue-600/20" : "btn-glass text-slate-300"
+              )}
             >
-              <Save size={18} className="group-active:scale-95" />
+              <LibraryIcon size={20} /> 共享库
             </button>
-            <div className="w-[1px] h-6 bg-white/10 mx-1" />
+            <div className="w-[1px] h-10 bg-white/10 mx-2" />
             <button 
               onClick={() => setMode('setup')}
               className={cn(
-                "px-5 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2",
-                mode === 'setup' ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "btn-glass text-slate-300"
+                "px-8 h-14 text-base font-bold transition-all rounded-2xl flex items-center gap-3",
+                mode === 'setup' ? "bg-blue-600 text-white shadow-xl shadow-blue-600/20" : "btn-glass text-slate-300"
               )}
             >
-              <Upload size={16} /> 设置
+              <FileText size={20} /> 使用说明
             </button>
             <button 
               onClick={() => setMode('edit')}
               className={cn(
-                "px-5 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2",
-                mode === 'edit' ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "btn-glass text-slate-300"
+                "px-8 h-14 text-base font-bold transition-all rounded-2xl flex items-center gap-3",
+                mode === 'edit' ? "bg-blue-600 text-white shadow-xl shadow-blue-600/20" : "btn-glass text-slate-300"
               )}
             >
-              <Settings2 size={16} /> 分段
+              <Settings2 size={20} /> 工具台
             </button>
             <button 
               onClick={() => setMode('train')}
               className={cn(
-                "px-5 py-2.5 text-sm font-medium transition-all rounded-xl flex items-center gap-2",
-                mode === 'train' ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "btn-glass text-slate-300"
+                "px-8 h-14 text-base font-bold transition-all rounded-2xl flex items-center gap-3",
+                mode === 'train' ? "bg-blue-600 text-white shadow-xl shadow-blue-600/20" : "btn-glass text-slate-300"
               )}
             >
-              <BookOpen size={16} /> 训练
+              <Play size={20} /> 教学模式
+            </button>
+            <button 
+              onClick={handleLogout}
+              className="p-4 btn-glass rounded-2xl text-red-400 hover:text-red-300 transition-all ml-4"
+              title="退出登录"
+            >
+              <LogOut size={24} />
             </button>
           </nav>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-10">
+      <main className="max-w-[1600px] mx-auto px-8 py-12">
         <AnimatePresence mode="wait">
-          {mode === 'setup' && (
-            <motion.div 
-              key="setup"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-2xl mx-auto space-y-8"
-            >
-              <div className="glass p-10 rounded-[32px] space-y-8">
-                <div className="space-y-2">
-                  <h2 className="text-3xl font-bold text-white">开始新的听力任务</h2>
-                  <p className="text-slate-400 text-sm">上传音频文件并粘贴听力脚本。</p>
+          {mode === 'users' && (
+            <motion.div key="users" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-10">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-4xl font-black text-white tracking-tight">账号管理中心</h2>
+                  <p className="text-slate-400 mt-2 text-lg">仅管理员可见，您可以手动添加或移除教职工账号。</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+                {/* Create User Form */}
+                <div className="lg:col-span-4 glass p-10 rounded-[48px] border-white/10 shadow-2xl h-fit">
+                   <h3 className="text-2xl font-bold text-white mb-8">添加新成员</h3>
+                   <div className="space-y-6">
+                      <div className="space-y-2">
+                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">用户名</label>
+                         <input 
+                           value={newUser.username}
+                           onChange={e => setNewUser(p => ({...p, username: e.target.value}))}
+                           className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl px-6 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                           placeholder="输入工号或姓名"
+                         />
+                      </div>
+                      <div className="space-y-2">
+                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">初始密码</label>
+                         <input 
+                           type="password"
+                           value={newUser.password}
+                           onChange={e => setNewUser(p => ({...p, password: e.target.value}))}
+                           className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl px-6 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                           placeholder="••••••••"
+                         />
+                      </div>
+                      <div className="space-y-2">
+                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">角色权限</label>
+                         <select 
+                           value={newUser.role}
+                           onChange={e => setNewUser(p => ({...p, role: e.target.value as any}))}
+                           className="w-full h-16 bg-slate-900 border border-white/10 rounded-2xl px-6 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                         >
+                            <option value="user">普通教师</option>
+                            <option value="admin">管理员</option>
+                         </select>
+                      </div>
+                      <button 
+                         onClick={async () => {
+                           if (!newUser.username || !newUser.password) return alert('请填写完整信息');
+                           try {
+                             await api.createUser(newUser);
+                             setNewUser({ username: '', password: '', role: 'user' });
+                             loadUsers();
+                             alert('创建成功');
+                           } catch (err: any) {
+                             alert(err.message);
+                           }
+                         }}
+                         className="w-full h-16 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-xl shadow-xl shadow-blue-600/20 active:scale-95 transition-all mt-4"
+                      >
+                         确 认 添 加
+                      </button>
+                   </div>
                 </div>
 
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3">音频文件 (MP3/WAV)</label>
-                    <div className="relative group">
-                      <input 
-                        type="file" 
-                        accept="audio/*" 
-                        onChange={handleAudioUpload}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                      />
-                      <div className="border border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center gap-4 bg-white/5 hover:bg-white/10 transition-all group-hover:border-blue-500/50">
-                        <div className="w-14 h-14 bg-white/5 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-inner">
-                          <ListMusic size={28} />
+                {/* Users List */}
+                <div className="lg:col-span-8 glass p-10 rounded-[48px] border-white/10 shadow-2xl">
+                   <h3 className="text-2xl font-bold text-white mb-8">成员列表 ({users.length})</h3>
+                   <div className="space-y-4">
+                      {users.map(u => (
+                        <div key={u.id} className="p-6 bg-white/5 border border-white/5 rounded-3xl flex items-center justify-between hover:border-white/10 transition-all">
+                           <div className="flex items-center gap-6">
+                              <div className="w-14 h-14 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500">
+                                 <UserIcon size={28} />
+                              </div>
+                              <div>
+                                 <h4 className="text-xl font-bold text-white">{u.username}</h4>
+                                 <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{u.role === 'admin' ? '系统管理员' : '学科教师'}</span>
+                              </div>
+                           </div>
+                           <div className="flex items-center gap-4">
+                              {u.username !== 'admin' && (
+                                <button 
+                                  onClick={async () => {
+                                    if (confirm('确定移除该账户吗？相关材料仍将保留。')) {
+                                      await api.deleteUser(u.id);
+                                      loadUsers();
+                                    }
+                                  }}
+                                  className="p-4 bg-red-500/10 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all"
+                                >
+                                  <Trash2 size={24} />
+                                </button>
+                              )}
+                           </div>
                         </div>
-                        <span className="text-sm font-medium text-slate-300">
-                          {material.audioUrl ? "音频已成功上传 ✅" : "点击或拖拽上传音频"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3">听力脚本 (MARKDOWN)</label>
-                    <textarea 
-                      value={material.script}
-                      onChange={(e) => setMaterial(prev => ({ ...prev, script: e.target.value }))}
-                      placeholder="在此处输入脚本... 提示：[00:01] 标识分段开始时间"
-                      className="w-full h-72 bg-white/5 border border-white/10 rounded-2xl p-5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all resize-none"
-                    />
-                  </div>
-
-                  <div className="pt-4 space-y-3">
-                    <button 
-                      disabled={!material.audioUrl}
-                      onClick={() => setMode('edit')}
-                      className="w-full h-14 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-600/30"
-                    >
-                      下一步：配置分段 <ArrowRight size={20} />
-                    </button>
-
-                    <button 
-                      onClick={() => {
-                        setMaterial({
-                          title: 'Daily Life: Ordering at a Coffee Shop',
-                          audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-                          script: `### English Dialogue: At the Coffee Shop\n\n[00:00] **Barista**: Next in line, please! Hi there, what can I get started for you today?\n**Customer**: Hi! Can I get a large iced latte, please?\n**Barista**: Sure thing. Would you like any flavor in that? We have vanilla, caramel, and hazelnut.\n\n[00:10] **Customer**: Hmm, I'll go with caramel. And could I have that with oat milk instead of whole milk?\n**Barista**: You got it. One large iced caramel latte with oat milk. Anything else for you?\n\n[00:20] **Customer**: Actually, yes. Do you have any of those blueberry muffins left?\n**Barista**: Let me check... Yes, we have two left! Would you like me to warm one up for you?\n\n[00:30] **Customer**: That sounds perfect, thank you. How much will that be?\n**Barista**: That'll be $8.50 altogether. You can tap your card right here whenever you're ready.\n\n[00:40] **Customer**: Here you go. Thanks!\n**Barista**: Great, thanks. Your drink will be ready at the end of the counter in just a few minutes. Have a great day!\n**Customer**: You too!`,
-                          segments: [
-                            { id: '1', label: '题目 1: Ordering Drink', startTime: 0, endTime: 10, subtitle: '**Barista**: Next in line, please! Hi there, what can I get started for you today?\n**Customer**: Hi! Can I get a large iced latte, please?\n**Barista**: Sure thing. Would you like any flavor in that? We have vanilla, caramel, and hazelnut.' },
-                            { id: '2', label: '题目 2: Substitution', startTime: 10, endTime: 20, subtitle: '**Customer**: Hmm, I\'ll go with caramel. And could I have that with oat milk instead of whole milk?\n**Barista**: You got it. One large iced caramel latte with oat milk. Anything else for you?' },
-                            { id: '3', label: '题目 3: Adding Food', startTime: 20, endTime: 30, subtitle: '**Customer**: Actually, yes. Do you have any of those blueberry muffins left?\n**Barista**: Let me check... Yes, we have two left! Would you like me to warm one up for you?' },
-                            { id: '4', label: '题目 4: Payment', startTime: 30, endTime: 40, subtitle: '**Customer**: That sounds perfect, thank you. How much will that be?\n**Barista**: That\'ll be $8.50 altogether. You can tap your card right here whenever you\'re ready.' },
-                            { id: '5', label: '题目 5: Closing', startTime: 40, endTime: 55, subtitle: '**Customer**: Here you go. Thanks!\n**Barista**: Great, thanks. Your drink will be ready at the end of the counter in just a few minutes. Have a great day!\n**Customer**: You too!' },
-                          ]
-                        });
-                        setMode('edit');
-                      }}
-                      className="w-full h-14 btn-glass text-slate-300 rounded-2xl font-bold flex items-center justify-center gap-2"
-                    >
-                      加载演示案例
-                    </button>
-                  </div>
+                      ))}
+                   </div>
                 </div>
               </div>
             </motion.div>
           )}
 
-          {mode === 'edit' && (
-            <motion.div 
-              key="edit"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="grid grid-cols-1 lg:grid-cols-12 gap-8"
-            >
-              {/* Left: Player & Editor */}
-              <div className="lg:col-span-4 space-y-6">
-                <div className="glass p-6 rounded-[24px] space-y-6">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><Clock size={16} className="text-blue-400" /> 播放控制</h3>
-                    <div className="flex gap-2">
-                       <button 
-                         onClick={clearAllSegments}
-                         disabled={material.segments.length === 0}
-                         className="text-[10px] font-bold text-red-500 hover:text-red-400 flex items-center gap-1.5 transition-all uppercase tracking-widest disabled:opacity-30 p-2 glass rounded-lg border-red-500/20 active:bg-red-500/10"
-                       >
-                         <Trash2 size={12} /> 全部清空
-                       </button>
-                       <button 
-                         onClick={extractSegmentsFromScript}
-                         className="text-[10px] font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 transition-colors uppercase tracking-widest"
-                       >
-                         <CheckCircle2 size={12} /> 同步脚本
-                       </button>
+          {mode === 'library' && (
+            <motion.div key="library" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-10">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-4xl font-black text-white tracking-tight">共享材料库</h2>
+                  <p className="text-slate-400 mt-2 text-lg">点击下方材料卡片进行浏览或二次编辑。</p>
+                </div>
+                <button onClick={() => setMode('setup')} className="h-16 px-10 bg-blue-600 hover:bg-blue-700 text-white rounded-[20px] font-bold text-lg flex items-center gap-3 transition-all shadow-xl shadow-blue-600/20">
+                  <Plus size={24} /> 创建新材料
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+                {library.length === 0 && (
+                  <div className="col-span-full py-20 text-center glass rounded-[40px]">
+                    <Search size={64} className="mx-auto mb-6 text-slate-700" />
+                    <p className="text-slate-500 text-xl font-medium">库中暂无材料，开始创建第一篇吧！</p>
+                  </div>
+                )}
+                {library.map((item) => (
+                  <motion.div 
+                    key={item.id} 
+                    whileHover={{ scale: 1.02 }} 
+                    className="glass p-8 rounded-[40px] border-white/10 flex flex-col gap-6 group relative overflow-hidden"
+                  >
+                    <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-all">
+                      { (user.role === 'admin' || user.id === item.authorId) && (
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if(confirm('确定删除吗？')) {
+                              api.deleteMaterial(item.id!).then(() => loadLibrary());
+                            }
+                          }}
+                          className="p-3 bg-red-500/20 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all shadow-lg"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
                     </div>
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500">
+                        <FileText size={32} />
+                      </div>
+                      <div className="flex-grow min-w-0">
+                        <h3 className="text-2xl font-bold text-white truncate">{item.title}</h3>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{item.authorName}</span>
+                          <div className="w-1 h-1 bg-slate-700 rounded-full" />
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{new Date(item.createdAt!).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                       <div className="p-4 bg-white/5 rounded-2xl flex flex-col gap-1">
+                         <span className="text-[8px] font-black text-slate-600 uppercase tracking-widest">题目总数</span>
+                         <span className="text-xl font-bold text-white tracking-tighter">{item.segments.length} 题</span>
+                       </div>
+                       <div className="p-4 bg-white/5 rounded-2xl flex flex-col gap-1">
+                         <span className="text-[8px] font-black text-slate-600 uppercase tracking-widest">时长概览</span>
+                         <span className="text-xl font-bold text-white tracking-tighter">{formatTime(item.segments[item.segments.length-1]?.endTime || 0)}</span>
+                       </div>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setMaterial(item);
+                        setMode('train');
+                      }}
+                      className="w-full h-16 bg-white/10 hover:bg-blue-600 text-white rounded-[20px] font-bold text-lg transition-all flex items-center justify-center gap-3"
+                    >
+                      开始训练 <ArrowRight size={20} />
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          {mode === 'setup' && (
+            <motion.div key="setup" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-[1200px] mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
+               {/* Instructions */}
+               <div className="glass p-10 rounded-[48px] border-white/10 shadow-2xl relative overflow-hidden h-full">
+                  <div className="absolute -top-20 -right-20 w-64 h-64 bg-blue-600/10 blur-[100px] rounded-full" />
+                  <div className="relative prose prose-invert prose-slate max-w-none prose-h2:text-4xl prose-h2:font-black prose-h2:tracking-tighter prose-h3:text-2xl prose-h3:font-bold prose-p:text-lg prose-p:text-slate-400 prose-li:text-slate-400 prose-li:text-lg">
+                    <Markdown>{INSTRUCTIONS_SCRIPT}</Markdown>
+                  </div>
+               </div>
+
+               {/* Interaction Card */}
+               <div className="glass p-10 rounded-[48px] border-white/10 shadow-2xl flex flex-col gap-10">
+                  <div>
+                    <h2 className="text-4xl font-black text-white tracking-tight">导入新素材</h2>
+                    <p className="text-slate-400 mt-2 text-lg">在此上传音频并完成基础配置。</p>
                   </div>
 
-                  <div className="bg-black/20 rounded-[20px] p-6 space-y-4 border border-white/5 shadow-inner">
-                    <div className="space-y-2">
-                       <div className="flex justify-between text-[10px] font-mono text-slate-500 tracking-widest">
-                         <span className="text-blue-400">{formatTime(currentTime)}</span>
-                         <span>{formatTime(duration)}</span>
-                       </div>
-                       <input 
-                         type="range" 
-                         min="0" 
-                         max={duration} 
-                         value={currentTime}
-                         onChange={(e) => {
-                           if (audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
-                         }}
-                         className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                       />
-                    </div>
-
-                    <div className="flex items-center justify-center gap-6">
-                      <button onClick={() => skip(-10)} className="text-slate-500 hover:text-white transition-all active:scale-90"><Rewind size={20} /></button>
-                      <button onClick={togglePlay} className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg hover:scale-105 active:scale-95 transition-all">
-                        {isPlaying ? <Pause size={24} /> : <Play size={24} className="translate-x-1" />}
-                      </button>
-                      <button onClick={() => skip(10)} className="text-slate-500 hover:text-white transition-all active:scale-90"><FastForward size={20} /></button>
-                    </div>
-
-                    <div className="flex items-center gap-4 pt-4 border-t border-white/5">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">播放速度</span>
-                        <span className="text-xs font-mono font-bold text-blue-400">{playbackSpeed.toFixed(1)}x</span>
+                  <div className="space-y-8">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.3em] mb-4 ml-1">音频文件 (MP3/WAV)</label>
+                      <div className="relative group">
+                        <input type="file" accept="audio/*" onChange={handleAudioUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                        <div className="border-4 border-dashed border-white/5 rounded-[32px] p-16 flex flex-col items-center justify-center gap-6 bg-white/5 group-hover:bg-white/10 group-hover:border-blue-500/30 transition-all">
+                          <div className="w-24 h-24 bg-blue-600/10 rounded-[32px] flex items-center justify-center text-blue-500 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-inner">
+                            <Upload size={48} />
+                          </div>
+                          <div className="text-center">
+                            <span className="text-xl font-bold text-white block">
+                              {material.audioUrl ? "音频已成功就绪 ✅" : "点击或拖拽上传音频"}
+                            </span>
+                            {!material.audioUrl && <p className="text-slate-500 mt-2">推荐使用 192kbps 或以上采样率的 MP3</p>}
+                          </div>
+                        </div>
                       </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.3em] ml-1">材料标题</label>
                       <input 
-                        type="range"
-                        min="0.5"
-                        max="2.5"
-                        step="0.1"
-                        value={playbackSpeed}
-                        onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                        className="flex-grow h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
+                        value={material.title} 
+                        onChange={e => setMaterial(p => ({...p, title: e.target.value}))} 
+                        className="w-full h-20 bg-white/5 border border-white/10 rounded-[24px] px-8 text-2xl font-bold text-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all"
+                        placeholder="请输入听力材料标题"
                       />
                     </div>
-                  </div>
-                </div>
 
-                <div className="glass p-6 rounded-[32px] space-y-6">
-                  <h3 className="font-bold text-white flex items-center gap-2 text-sm tracking-tight"><BookOpen size={16} className="text-blue-400" /> 脚本预览</h3>
-                  <div className="bg-black/20 rounded-[20px] p-6 text-slate-400 h-[500px] overflow-y-auto custom-scrollbar border border-white/5">
-                    <div className="max-w-none">
-                       {renderTranscript(true)}
+                    <div className="pt-6">
+                      <button 
+                        disabled={!material.audioUrl}
+                        onClick={() => setMode('edit')}
+                        className="w-full h-20 bg-blue-600 hover:bg-blue-700 disabled:opacity-20 disabled:grayscale text-white rounded-[24px] font-black text-2xl shadow-2xl shadow-blue-600/30 transition-all flex items-center justify-center gap-4"
+                      >
+                        下一步：配置题目分段 <ArrowRight size={32} />
+                      </button>
                     </div>
                   </div>
+               </div>
+            </motion.div>
+          )}
+
+          {mode === 'edit' && (
+            <motion.div key="edit" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="grid grid-cols-1 2xl:grid-cols-12 gap-10">
+              <div className="2xl:col-span-4 space-y-8">
+                <div className="glass p-8 rounded-[40px] space-y-8">
+                   <h3 className="text-xl font-bold text-white flex items-center gap-3">
+                     <Clock size={24} className="text-blue-500" /> 播放控制器
+                   </h3>
+                   <div className="bg-slate-900/50 rounded-[32px] p-8 border border-white/5 space-y-8">
+                      <div className="flex items-center justify-center gap-10">
+                        <button onClick={() => skip(-10)} className="p-4 rounded-2xl bg-white/5 text-slate-400 hover:text-white transition-all"><Rewind size={32} /></button>
+                        <button onClick={togglePlay} className="w-24 h-24 bg-blue-600 hover:bg-blue-700 rounded-full flex items-center justify-center text-white shadow-2xl shadow-blue-600/40 active:scale-90 transition-all">
+                          {isPlaying ? <Pause size={48} /> : <Play size={48} className="translate-x-1" />}
+                        </button>
+                        <button onClick={() => skip(10)} className="p-4 rounded-2xl bg-white/5 text-slate-400 hover:text-white transition-all"><FastForward size={32} /></button>
+                      </div>
+                      <div className="space-y-4">
+                         <div className="flex justify-between text-xs font-black text-slate-500 tracking-widest">
+                           <span className="text-blue-500">{formatTime(currentTime)}</span>
+                           <span>{formatTime(duration)}</span>
+                         </div>
+                         <input type="range" min="0" max={duration} value={currentTime} onChange={e => {
+                           if(audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
+                         }} className="w-full h-2 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500" />
+                      </div>
+                   </div>
+                   <div className="grid grid-cols-1 gap-4">
+                      <button 
+                        onClick={async () => {
+                          await manualSave();
+                          alert('材料已成功保存并发布到共享库！');
+                        }} 
+                        className="h-20 bg-blue-600 hover:bg-blue-700 text-white rounded-[24px] font-black text-xl flex items-center justify-center gap-4 transition-all shadow-xl shadow-blue-600/30 active:scale-95"
+                      >
+                        <Save size={28} /> 保存并发布到库
+                      </button>
+                      <button onClick={extractSegmentsFromScript} className="h-16 btn-glass text-blue-400 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all"><CheckCircle2 size={20} /> 智能识别脚本</button>
+                   </div>
+                </div>
+
+                <div className="glass p-8 rounded-[40px] flex flex-col h-[600px]">
+                  <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
+                    <FileText size={24} className="text-blue-500" /> 脚本工作流
+                  </h3>
+                  <textarea 
+                    value={material.script} 
+                    onChange={e => setMaterial(p => ({...p, script: e.target.value}))}
+                    className="flex-grow w-full bg-slate-900/50 border border-white/5 rounded-[24px] p-6 text-lg text-slate-300 outline-none focus:border-blue-500/30 transition-all resize-none custom-scrollbar"
+                    placeholder="在此输入文本，系统会根据 [00:00] 格式自动切分题目..."
+                  />
                 </div>
               </div>
 
-              {/* Right: Segments Management */}
-              <div className="lg:col-span-8 flex flex-col h-full min-h-[600px]">
-                <div className="glass p-8 rounded-[32px] flex flex-col flex-grow border-white/10">
-                  <div className="flex items-center justify-between mb-8">
-                    <h3 className="font-bold text-white tracking-tight">题目分段管理</h3>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => {
-                          setMaterial(prev => {
-                            const lastSegment = prev.segments[prev.segments.length - 1];
-                            const startTime = lastSegment ? lastSegment.endTime : 0;
-                            return {
-                              ...prev,
-                              segments: [...prev.segments, {
-                                id: crypto.randomUUID(),
-                                label: `题目 ${prev.segments.length + 1}`,
-                                startTime: currentTime,
-                                endTime: Math.min(currentTime + 5, duration),
-                                subtitle: ''
-                              }]
-                            };
-                          });
-                        }}
-                        title="在当前时间新增分段"
-                        className="w-10 h-10 btn-glass rounded-xl flex items-center justify-center text-blue-400 border-blue-500/20"
-                      >
-                        <Plus size={20} />
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setMaterial(prev => {
-                            const newSegments = [...prev.segments];
-                            if (newSegments.length > 0) {
-                              const lastIdx = newSegments.length - 1;
-                              // Update previous segment's end time to current time
-                              newSegments[lastIdx].endTime = currentTime;
-                            }
-                            // Add new segment starting at current time
-                            newSegments.push({
-                              id: crypto.randomUUID(),
-                              label: `题目 ${newSegments.length + 1}`,
-                              startTime: currentTime,
-                              endTime: Math.min(currentTime + 5, duration),
-                              subtitle: ''
-                            });
-                            return { ...prev, segments: newSegments };
-                          });
-                        }}
-                        title="手动切割（设当前时间为上段落结束及新段落开始）"
-                        className="px-3 py-2 btn-glass rounded-xl text-xs font-bold text-blue-400 flex items-center gap-1 border-blue-500/20"
-                      >
-                        <RotateCcw size={14} className="rotate-90" /> 快速切割
-                      </button>
+              <div className="2xl:col-span-8 space-y-8 flex flex-col h-full">
+                 <div className="glass p-10 rounded-[48px] flex flex-grow flex-col h-full">
+                    <div className="flex items-center justify-between mb-8">
+                       <div>
+                         <h3 className="text-3xl font-black text-white tracking-tight">题目明细编辑器</h3>
+                         <p className="text-slate-400 mt-1">设置每道题目的开始结束时间及课文内容。</p>
+                       </div>
+                       <div className="flex gap-4">
+                         <button onClick={clearAllSegments} className="px-6 h-14 btn-glass text-red-500 border-red-500/20 text-sm font-bold rounded-2xl flex items-center gap-2 uppercase tracking-widest"><Trash2 size={16}/> 全部清空</button>
+                         <button onClick={() => setMaterial(p => ({
+                            ...p,
+                            segments: [...p.segments, { id: crypto.randomUUID(), label: `题目 ${p.segments.length+1}`, startTime: currentTime, endTime: Math.min(currentTime+10, duration), subtitle: '' }]
+                         }))} className="px-6 h-14 bg-blue-600 text-white font-bold rounded-2xl flex items-center gap-3 shadow-xl transition-all"><Plus size={20}/> 新增题目</button>
+                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex-grow space-y-4 overflow-y-auto pr-2 custom-scrollbar">
-                    {material.segments.map((seg, idx) => (
-                      <div key={seg.id} className="p-4 bg-white/5 border border-white/5 rounded-2xl group hover:border-white/10 transition-all space-y-3">
-                        <div className="flex items-center justify-between">
-                          <input 
-                            value={seg.label}
-                            onChange={(e) => {
-                              const newSegs = [...material.segments];
-                              newSegs[idx].label = e.target.value;
-                              setMaterial(p => ({ ...p, segments: newSegs }));
-                            }}
-                            className="text-sm font-bold bg-transparent border-none focus:outline-none focus:ring-0 text-white w-2/3"
-                          />
-                          <button 
-                            onClick={() => {
-                              setMaterial(p => {
-                                const remaining = p.segments.filter(s => s.id !== seg.id);
-                                const reindexed = remaining.map((s, i) => ({
-                                  ...s,
-                                  label: `题目 ${i + 1}`
-                                }));
-                                return { ...p, segments: reindexed };
-                              });
-                            }}
-                            className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                        
-                        <textarea
-                          placeholder="输入本段字幕/内容..."
-                          value={seg.subtitle || ''}
-                          onChange={(e) => {
-                            const newSegs = [...material.segments];
-                            newSegs[idx].subtitle = e.target.value;
-                            setMaterial(p => ({ ...p, segments: newSegs }));
-                          }}
-                          className="w-full bg-black/20 border border-white/5 rounded-lg p-4 text-sm text-slate-300 placeholder:text-slate-600 focus:border-blue-500/30 outline-none resize-none h-48"
-                        />
-                        <div className="flex items-center gap-4">
-                          <div className="flex-grow grid grid-cols-2 gap-3 text-[10px] font-mono">
-                             <div className="space-y-1.5">
-                               <span className="text-slate-500 font-bold tracking-widest">START</span>
-                               <input 
-                                 type="number" step="1" 
-                                 value={Math.floor(seg.startTime)}
-                                 onChange={(e) => {
-                                   const newSegs = [...material.segments];
-                                   newSegs[idx].startTime = parseFloat(e.target.value);
-                                   setMaterial(p => ({ ...p, segments: newSegs }));
-                                 }}
-                                 className="w-full p-2 bg-black/20 border border-white/5 rounded-lg text-white focus:border-blue-500/50 outline-none"
-                               />
-                             </div>
-                             <div className="space-y-1.5">
-                               <span className="text-slate-500 font-bold tracking-widest">END</span>
-                               <input 
-                                 type="number" step="1"
-                                 value={Math.floor(seg.endTime)} 
-                                 onChange={(e) => {
-                                   const newSegs = [...material.segments];
-                                   newSegs[idx].endTime = parseFloat(e.target.value);
-                                   setMaterial(p => ({ ...p, segments: newSegs }));
-                                 }}
-                                 className="w-full p-2 bg-black/20 border border-white/5 rounded-lg text-white focus:border-blue-500/50 outline-none"
-                               />
-                             </div>
-                          </div>
-                          <button 
-                            onClick={() => {
-                              if (audioRef.current) audioRef.current.currentTime = seg.startTime;
-                              setIsPlaying(true);
-                              audioRef.current?.play();
-                            }}
-                            className="w-10 h-10 bg-blue-600/10 border border-blue-500/30 rounded-xl flex items-center justify-center text-blue-400 hover:bg-blue-600 hover:text-white transition-all shadow-lg"
-                          >
-                            <Play size={16} className="translate-x-0.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="pt-8 mt-auto border-t border-white/10">
-                    <button 
-                      onClick={() => setMode('train')}
-                      className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/30 hover:bg-blue-700 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
-                    >
-                      <Save size={20} /> 完成配置，开始训练
-                    </button>
-                  </div>
-                </div>
+                    <div className="flex-grow space-y-6 overflow-y-auto pr-4 custom-scrollbar max-h-[800px]">
+                       {material.segments.map((seg, idx) => (
+                         <div key={seg.id} className="p-8 bg-white/5 border border-white/5 rounded-[32px] group hover:border-white/10 transition-all grid grid-cols-1 xl:grid-cols-[1fr_2fr_auto] gap-8 items-start">
+                            <div className="space-y-6">
+                               <input value={seg.label} onChange={e => setMaterial(p => {const s=[...p.segments]; s[idx].label=e.target.value; return {...p, segments:s}})} className="text-2xl font-black text-white bg-transparent border-none outline-none w-full" />
+                               <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">开始 (秒)</span>
+                                    <input type="number" value={Math.floor(seg.startTime)} onChange={e => setMaterial(p => {const s=[...p.segments]; s[idx].startTime=parseFloat(e.target.value); return {...p, segments:s}})} className="w-full h-14 bg-slate-900 rounded-xl px-4 text-white font-mono border border-white/5" />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">结束 (秒)</span>
+                                    <input type="number" value={Math.floor(seg.endTime)} onChange={e => setMaterial(p => {const s=[...p.segments]; s[idx].endTime=parseFloat(e.target.value); return {...p, segments:s}})} className="w-full h-14 bg-slate-900 rounded-xl px-4 text-white font-mono border border-white/5" />
+                                  </div>
+                               </div>
+                            </div>
+                            <textarea value={seg.subtitle} onChange={e => setMaterial(p => {const s=[...p.segments]; s[idx].subtitle=e.target.value; return {...p, segments:s}})} className="w-full h-40 bg-slate-900 rounded-2xl p-6 text-lg text-slate-300 outline-none border border-white/5 focus:border-blue-500/20 resize-none" placeholder="输入段落文字..." />
+                            <div className="flex flex-col gap-3">
+                               <button onClick={() => { if(audioRef.current) audioRef.current.currentTime=seg.startTime; setIsPlaying(true); audioRef.current?.play(); }} className="w-16 h-16 bg-blue-600/10 text-blue-500 border border-blue-500/20 rounded-2xl flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all"><Play size={24} className="translate-x-0.5" /></button>
+                               <button onClick={() => setMaterial(p => ({...p, segments: p.segments.filter(s => s.id !== seg.id).map((s,i)=>({...s, label:`题目 ${i+1}`}))}))} className="w-16 h-16 bg-red-500/10 text-red-500 border border-red-500/20 rounded-2xl flex items-center justify-center hover:bg-red-500 hover:text-white transition-all"><Trash2 size={24} /></button>
+                            </div>
+                         </div>
+                       ))}
+                    </div>
+                    <div className="mt-10">
+                       <button onClick={() => setMode('train')} className="w-full h-20 bg-blue-600 hover:bg-blue-700 text-white rounded-[24px] font-black text-2xl shadow-xl transition-all pt-1 flex items-center justify-center gap-4"><CheckCircle2 size={32} /> 进入教学训练</button>
+                    </div>
+                 </div>
               </div>
             </motion.div>
           )}
 
           {mode === 'train' && (
-            <motion.div 
-               key="train"
-               initial={{ opacity: 0, y: 20 }}
-               animate={{ opacity: 1, y: 0 }}
-               exit={{ opacity: 0, y: -20 }}
-               className="max-w-7xl mx-auto space-y-8"
-            >
-              {/* Top: Global Player */}
-              <div className="glass p-8 rounded-[40px] border-white/10 shadow-2xl relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-30" />
-                
-                <div className="flex flex-col gap-8">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="space-y-1">
-                      <span className="text-[9px] font-black text-blue-500 uppercase tracking-[0.4em]">Integrated Listening System</span>
-                      <h2 className="text-3xl font-black tracking-tighter text-white leading-tight">
-                        练习工作台
-                      </h2>
-                    </div>
-
-                    <div className="flex items-center gap-6 glass-dark p-4 rounded-3xl border-white/5">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest leading-none">PLAYBACK SPEED</span>
-                        <span className="text-sm font-mono font-bold text-blue-400">{playbackSpeed.toFixed(1)}x</span>
-                      </div>
-                      <input 
-                        type="range"
-                        min="0.5"
-                        max="2.5"
-                        step="0.1"
-                        value={playbackSpeed}
-                        onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                        className="w-40 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="bg-black/30 rounded-[32px] p-8 border border-white/5 shadow-inner">
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-10 items-center">
-                      {/* Left info */}
-                      <div className="hidden md:flex flex-col gap-2">
-                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">CURRENT FOCUS</span>
-                        <p className="text-white font-bold truncate">
-                          {activeSegmentIndex !== null ? material.segments[activeSegmentIndex].label : "自由浏览中..."}
-                        </p>
-                      </div>
-
-                      {/* Center Controls */}
-                      <div className="flex flex-col items-center gap-6">
-                        <div className="flex items-center gap-8">
-                          <button onClick={() => skip(-10)} className="w-12 h-12 rounded-full flex items-center justify-center text-slate-500 glass hover:text-white transition-all">
-                            <Rewind size={24} />
-                          </button>
-                          <button 
-                            onClick={togglePlay} 
-                            className="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_0_40px_rgba(37,99,235,0.4)] hover:scale-105 active:scale-95 transition-all"
-                          >
-                            {isPlaying ? <Pause size={32} /> : <Play size={32} className="translate-x-1" />}
-                          </button>
-                          <button onClick={() => skip(10)} className="w-12 h-12 rounded-full flex items-center justify-center text-slate-500 glass hover:text-white transition-all">
-                            <FastForward size={24} />
-                          </button>
+            <motion.div key="train" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} className="space-y-12">
+               {/* Training Player */}
+               <div className="glass p-10 rounded-[56px] border-white/10 shadow-3xl relative">
+                  <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-1 bg-blue-500 rounded-full blur-[2px] opacity-50" />
+                  <div className="flex flex-col gap-10">
+                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-8">
+                        <div>
+                           <span className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em] mb-2 block font-mono">Integrated Training Interface</span>
+                           <h2 className="text-5xl font-black text-white tracking-tighter">{material.title}</h2>
                         </div>
+                        <div className="glass-dark p-6 px-10 rounded-[32px] border-white/5 flex items-center gap-10">
+                           <div className="flex flex-col">
+                             <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest text-center mb-1">播放语速</span>
+                             <span className="text-3xl font-black text-blue-400 font-mono text-center leading-none">{playbackSpeed.toFixed(1)}x</span>
+                           </div>
+                           <input type="range" min="0.5" max="2.5" step="0.1" value={playbackSpeed} onChange={e => setPlaybackSpeed(parseFloat(e.target.value))} className="w-48 h-2 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500" />
+                        </div>
+                     </div>
 
-                        <div className="w-full max-w-sm space-y-2">
-                          <input 
-                             type="range" 
-                             min="0" 
-                             max={duration} 
-                             value={currentTime}
-                             onChange={(e) => {
-                               if (audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
-                             }}
-                             className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500"
-                           />
-                           <div className="flex justify-between text-[10px] font-mono font-bold">
-                             <span className="text-blue-500">{formatTime(currentTime)}</span>
-                             <span className="text-slate-600">{formatTime(duration)}</span>
+                     <div className="bg-slate-950/60 rounded-[48px] p-12 border border-white/5 shadow-inner">
+                        <div className="flex flex-col items-center gap-10">
+                           <div className="flex items-center gap-12">
+                              <button onClick={() => skip(-10)} className="w-20 h-20 bg-white/5 text-slate-500 hover:text-white rounded-[32px] flex items-center justify-center transition-all shadow-lg active:scale-90"><Rewind size={40} /></button>
+                              <button onClick={togglePlay} className="w-32 h-32 bg-blue-600 hover:bg-blue-700 text-white rounded-full flex items-center justify-center shadow-[0_0_60px_rgba(37,99,235,0.4)] active:scale-90 transition-all">
+                                {isPlaying ? <Pause size={64} /> : <Play size={64} className="translate-x-2" />}
+                              </button>
+                              <button onClick={() => skip(10)} className="w-20 h-20 bg-white/5 text-slate-500 hover:text-white rounded-[32px] flex items-center justify-center transition-all shadow-lg active:scale-90"><FastForward size={40} /></button>
+                           </div>
+                           <div className="w-full max-w-4xl space-y-4">
+                              <input type="range" min="0" max={duration} value={currentTime} onChange={e => { if(audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value); }} className="w-full h-3 bg-white/10 rounded-full appearance-none cursor-pointer accent-blue-500" />
+                              <div className="flex justify-between px-2 text-sm font-black font-mono tracking-widest">
+                                <span className="text-blue-500">{formatTime(currentTime)}</span>
+                                <span className="text-slate-600">{formatTime(duration)}</span>
+                              </div>
                            </div>
                         </div>
-                      </div>
-
-                      {/* Right decoration */}
-                      <div className="hidden md:flex items-center justify-end gap-1 px-4 h-12">
-                        {[...Array(12)].map((_, i) => (
-                          <motion.div 
-                            key={i}
-                            animate={{ height: isPlaying ? [10, 30, 15, 40, 20][i % 5] : 4 }}
-                            transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                            className="w-1 bg-blue-500/40 rounded-full"
-                          />
-                        ))}
-                      </div>
-                    </div>
+                     </div>
                   </div>
-                </div>
-              </div>
+               </div>
 
-              {/* Bottom: Splits Display */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* Left-Bottom: Topic List */}
-                <div className="lg:col-span-4 space-y-4">
-                  <div className="glass p-6 rounded-[32px] border-white/10 space-y-6 min-h-[400px]">
-                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
-                      <ListMusic size={16} className="text-blue-500" /> 题目库
-                    </h3>
-                    <div className="space-y-2 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
-                      {material.segments.map((seg, idx) => (
-                        <button 
-                          key={seg.id}
-                          onClick={() => {
-                            if (audioRef.current) audioRef.current.currentTime = seg.startTime;
-                            setIsPlaying(true);
-                            audioRef.current?.play();
-                          }}
-                          className={cn(
-                            "w-full px-5 py-4 rounded-2xl flex items-center justify-between border transition-all text-left text-sm group",
-                            activeSegmentIndex === idx 
-                              ? "bg-blue-600/20 border-blue-500/50 text-white shadow-lg shadow-blue-500/5" 
-                              : "bg-white/5 border-white/5 text-slate-400 hover:border-white/20"
-                          )}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className={cn(
-                              "w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold",
-                              activeSegmentIndex === idx ? "bg-blue-500 text-white" : "bg-white/10 text-slate-500"
-                            )}>{idx + 1}</span>
-                            <span className="font-bold">{seg.label}</span>
-                          </div>
-                          <span className="text-[10px] font-mono opacity-50">{formatTime(seg.startTime)}</span>
+               {/* Integrated Segment + Script View */}
+               <div className="glass p-12 rounded-[56px] min-h-[600px] space-y-10">
+                  <div className="flex items-center justify-between border-b border-white/5 pb-8">
+                     <h3 className="text-3xl font-black text-white tracking-tight flex items-center gap-4">
+                       <ListMusic size={32} className="text-blue-500" /> 交互教学脚本区
+                     </h3>
+                     <div className="flex items-center gap-6">
+                        <button onClick={() => setSyncScroll(!syncScroll)} className={cn("text-sm font-bold uppercase tracking-widest flex items-center gap-2", syncScroll ? "text-blue-400" : "text-slate-500")}>
+                           <CheckCircle2 size={16} /> 自动跟随
                         </button>
-                      ))}
-                    </div>
+                        <button onClick={() => setShowSubtitles(!showSubtitles)} className={cn("text-sm font-bold uppercase tracking-widest flex items-center gap-2", showSubtitles ? "text-blue-400" : "text-slate-500")}>
+                           {showSubtitles ? "显示原文" : "屏蔽原文"}
+                        </button>
+                     </div>
                   </div>
-                </div>
 
-                {/* Right-Bottom: Focused Transcript */}
-                <div className="lg:col-span-8">
-                  <div className="glass p-8 rounded-[40px] border-white/10 flex flex-col min-h-[400px]">
-                    <div className="flex items-center justify-between mb-8 pb-4 border-b border-white/5">
-                      <div className="flex items-center gap-3">
-                        <BookOpen size={20} className="text-blue-400" />
-                        <h3 className="font-bold text-white">当前题目脚本</h3>
-                      </div>
-                      
-                      <div className="flex items-center gap-3">
-                        <button 
-                          onClick={() => setShowSubtitles(!showSubtitles)}
-                          className={cn(
-                            "px-4 py-2 text-[10px] font-bold rounded-xl transition-all border",
-                            showSubtitles ? "bg-blue-600 border-blue-500 text-white" : "btn-glass border-white/5 text-slate-500"
-                          )}
-                        >
-                          显示字幕：{showSubtitles ? "开" : "关"}
-                        </button>
-                        <button 
-                          onClick={() => setSyncScroll(!syncScroll)}
-                          className={cn(
-                            "px-4 py-2 text-[10px] font-bold rounded-xl transition-all border",
-                            syncScroll ? "bg-blue-600 border-blue-500 text-white" : "btn-glass border-white/5 text-slate-500"
-                          )}
-                        >
-                          同步滚动：{syncScroll ? "开" : "关"}
-                        </button>
-                      </div>
-                    </div>
-                    
-                    <div ref={transcriptRef} className="flex-grow overflow-y-auto custom-scrollbar">
-                       {renderTranscript(true)}
-                    </div>
+                  <div ref={transcriptRef} className="space-y-4 max-h-[800px] overflow-y-auto pr-4 custom-scrollbar">
+                     {material.segments.map((seg, idx) => {
+                       const isActive = activeSegmentIndex === idx;
+                       return (
+                         <motion.div 
+                           key={seg.id}
+                           data-segment-index={idx}
+                           initial={false}
+                           animate={{ 
+                             backgroundColor: isActive ? 'rgba(37, 99, 235, 0.1)' : 'rgba(255, 255, 255, 0.02)',
+                             borderColor: isActive ? 'rgba(37, 99, 235, 0.3)' : 'rgba(255, 255, 255, 0.05)'
+                           }}
+                           className={cn(
+                             "p-8 rounded-[32px] border transition-all flex flex-col xl:flex-row items-center gap-10",
+                             isActive ? "shadow-2xl shadow-blue-900/20" : ""
+                           )}
+                         >
+                            <div className="flex items-center gap-6 min-w-[280px]">
+                               <button 
+                                 onClick={() => { if(audioRef.current) audioRef.current.currentTime=seg.startTime; setIsPlaying(true); audioRef.current?.play(); }}
+                                 className={cn(
+                                   "w-20 h-20 rounded-[24px] flex items-center justify-center transition-all shadow-xl shadow-blue-500/20",
+                                   isActive ? "bg-blue-600 text-white" : "bg-white/5 text-slate-500 hover:bg-white/10"
+                                 )}
+                               >
+                                  <Play size={32} className="translate-x-0.5" />
+                               </button>
+                               <div>
+                                 <span className={cn("text-[10px] font-black uppercase tracking-widest block mb-1", isActive ? "text-blue-400" : "text-slate-600")}>SEGMENT {idx+1}</span>
+                                 <h4 className={cn("text-2xl font-black tracking-tight", isActive ? "text-white" : "text-slate-400")}>{seg.label}</h4>
+                                 <span className="text-xs font-mono text-slate-600">{formatTime(seg.startTime)} - {formatTime(seg.endTime)}</span>
+                               </div>
+                            </div>
+                            
+                            <div className="flex-grow w-full">
+                               {isActive && showSubtitles ? (
+                                  <div className="text-3xl font-medium leading-relaxed text-blue-100">
+                                     {renderTranscript(true)}
+                                  </div>
+                               ) : (
+                                  <div className={cn("text-xl font-medium leading-relaxed transition-all", isActive ? "text-blue-200/50" : "text-slate-700")}>
+                                     {showSubtitles ? (seg.subtitle || "暂无脚本内容") : "••••••••••••••••••••••••••••••••••••"}
+                                  </div>
+                               )}
+                            </div>
+                         </motion.div>
+                       );
+                     })}
                   </div>
-                </div>
-              </div>
+               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </main>
 
-      <audio 
-        ref={audioRef}
-        src={material.audioUrl}
-      />
-
+      {/* Seewo Adaptability Styles */}
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
+        .app-bg {
+          background-color: #020617;
+          background-image: radial-gradient(circle at top left, #1e3a8a, transparent 40%), radial-gradient(circle at bottom right, #581c87, transparent 40%);
         }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
+        input[type="range"] {
+          -webkit-appearance: none;
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 999px;
         }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #E5E5E5;
-          border-radius: 10px;
+        input[type="range"]::-webkit-scrollbar {
+          display: none;
         }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #D4D4D4;
+        input[type="range"]::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          height: 32px;
+          width: 32px;
+          border-radius: 999px;
+          background: #3b82f6;
+          cursor: pointer;
+          box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+          border: 4px solid #fff;
         }
+        .prose h2, .prose h3 { margin-top: 2rem !important; }
+        .shadow-3xl { box-shadow: 0 40px 100px -20px rgba(0, 0, 0, 0.6); }
       `}</style>
     </div>
   );

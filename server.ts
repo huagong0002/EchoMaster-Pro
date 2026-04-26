@@ -57,6 +57,12 @@ async function startServer() {
   app.use(express.json());
   app.use(cors());
 
+  // 请求日志
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
+
   // 中间件：验证 JWT
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
@@ -75,7 +81,7 @@ async function startServer() {
   // 登录 (严格校验，不再允许自动注册)
   app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
+    const user = db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username) as any;
     
     if (!user || !bcrypt.compareSync(password, user.password)) {
       return res.status(401).json({ error: '用户名或密码错误，请联系管理员。' });
@@ -156,6 +162,11 @@ async function startServer() {
       return acc;
     }, {});
     res.json(map);
+  });
+
+  // 404 兜底 (API 路由)
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: 'API route not found' });
   });
 
   // Vite 托管前端

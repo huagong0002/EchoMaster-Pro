@@ -159,8 +159,17 @@ export default function App() {
         body: JSON.stringify({ username: authUsername, password: authPassword })
       });
       
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Login failed');
+      let data;
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error('Non-JSON response from server:', text);
+        throw new Error('服务器响应格式错误，请稍后重试。');
+      }
+
+      if (!res.ok) throw new Error(data.error || '登录失败');
 
       localStorage.setItem('echomaster_token', data.token);
       localStorage.setItem('echomaster_user', JSON.stringify(data.user));

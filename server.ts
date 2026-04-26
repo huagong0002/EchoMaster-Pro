@@ -80,17 +80,16 @@ async function startServer() {
 
   // Health check
   apiRouter.get('/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString(), env: process.env.NODE_ENV });
-  });
-
-  // Debug: List users (REMOVE IN PRODUCTION)
-  apiRouter.get('/debug/users', (req, res) => {
-    try {
-      const users = db.prepare('SELECT id, username, displayName, role FROM users').all();
-      res.json(users);
-    } catch (err) {
-      res.status(500).json({ error: err || 'Error reading users' });
-    }
+    res.json({ 
+      status: 'ok', 
+      time: new Date().toISOString(), 
+      env: process.env.NODE_ENV,
+      headers: {
+        host: req.headers.host,
+        'x-forwarded-for': req.headers['x-forwarded-for'],
+        'cf-ray': req.headers['cf-ray']
+      }
+    });
   });
 
   // 中间件：验证 JWT
@@ -106,42 +105,43 @@ async function startServer() {
     });
   };
 
-  // 登录
+  // 1. 登录 (严格校验)
   apiRouter.post('/login', (req, res) => {
     try {
       const { username, password } = req.body;
-      console.log(`Login attempt for: ${username}`);
-      
+      if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
+
+      console.log(`[AUTH] Login attempt: ${username}`);
       const user = db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username) as any;
       
       if (!user || !bcrypt.compareSync(password, user.password)) {
-        console.log(`Login failed for: ${username}`);
-        return res.status(401).json({ error: '用户名或密码错误，请联系管理员。' });
+        console.warn(`[AUTH] Login failed: ${username}`);
+        return res.status(401).json({ error: '用户名或密码错误。' });
       }
 
       const { password: _, ...userWithoutPassword } = user;
       const token = jwt.sign(userWithoutPassword, JWT_SECRET);
-      console.log(`Login successful for: ${username}`);
+      console.log(`[AUTH] Success: ${username}`);
       res.json({ token, user: userWithoutPassword });
     } catch (err: any) {
-      console.error('Login error:', err);
+      console.error('[AUTH] Critical Error:', err);
       res.status(500).json({ error: '服务器内部错误' });
     }
   });
 
-  // 管理员创建用户
+  // 2. 管理员创建用户 (仅管理员)
   apiRouter.post('/admin/create-user', authenticateToken, (req: any, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
     
-    const { username, password, displayName } = req.body;
+    const { username, password, displayName, role = 'user' } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Missing data' });
 
     try {
-      const id = Math.random().toString(36).substr(2, 9);
+      const id = `user-${Date.now()}`;
       const hashedPassword = bcrypt.hashSync(password, 10);
       db.prepare('INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)')
-        .run(id, username, hashedPassword, displayName || username, 'user');
-      res.json({ success: true });
+        .run(id, username.toLowerCase(), hashedPassword, displayName || username, role);
+      res.json({ success: true, userId: id });
     } catch (err: any) {
       if (err.message.includes('UNIQUE')) {
         return res.status(400).json({ error: '用户名已存在' });
@@ -206,6 +206,11 @@ async function startServer() {
   });
 
   app.use('/api', apiRouter);
+
+  // API 404 Fallback
+  apiRouter.use((req, res) => {
+    res.status(404).json({ error: 'API route not found', path: req.originalUrl });
+  });
 
   // Vite 托管前端
   if (process.env.NODE_ENV !== 'production') {

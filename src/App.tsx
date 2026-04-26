@@ -30,48 +30,57 @@ import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { AudioSegment, ListeningMaterial } from './types';
-import { auth, db, signOut, storage } from './lib/firebase';
-import { initializeApp, getApp, getApps } from 'firebase/app';
-import { 
-  getAuth, 
-  onAuthStateChanged, 
-  User, 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword 
-} from 'firebase/auth';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import firebaseConfig from '../firebase-applet-config.json';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  doc, 
-  setDoc,
-  deleteDoc, 
-  serverTimestamp,
-  orderBy,
-  getDocs,
-  limit,
-  getDoc
-} from 'firebase/firestore';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// Secondary Firebase app for admin tasks (prevents admin logout when creating users)
-const getSecondaryAuth = () => {
-  const app = getApps().find(a => a.name === 'secondary') || initializeApp(firebaseConfig, 'secondary');
-  return getAuth(app);
+// Simple Local API Helper
+const api = {
+  get: async (url: string) => {
+    const token = localStorage.getItem('echomaster_token');
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return res.json();
+  },
+  post: async (url: string, data: any) => {
+    const token = localStorage.getItem('echomaster_token');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return res.json();
+  },
+  delete: async (url: string) => {
+    const token = localStorage.getItem('echomaster_token');
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return res.json();
+  }
 };
+
+interface LocalUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: 'user' | 'admin';
+}
 
 export default function App() {
   const [mode, setMode] = useState<'setup' | 'edit' | 'train' | 'gallery'>('setup');
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<LocalUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAuthOverlay, setShowAuthOverlay] = useState(false);
   const [authUsername, setAuthUsername] = useState('');
@@ -95,138 +104,87 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
-  // Auth Observer
+  // Initialize Local Auth
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      if (u) {
-        // Fetch current user's profile info
-        const userDoc = await getDoc(doc(db, 'users', u.uid));
-        if (userDoc.exists()) {
-          setUsersMap(prev => ({ ...prev, [u.uid]: userDoc.data().username || userDoc.data().email }));
-        }
-
-        // Check if user is admin via DB or hardcoded developer email
-        const adminDoc = await getDoc(doc(db, 'admins', u.uid));
-        const isDeveloper = u.email === 'jerrylee086@gmail.com';
-        const adminStatus = adminDoc.exists() || isDeveloper;
-        setIsAdmin(adminStatus);
-        setShowAuthOverlay(false);
-
-        // Fetch all users for attribution in the shared library
-        try {
-          const usersSnap = await getDocs(collection(db, 'users'));
-          const map: Record<string, string> = {};
-          usersSnap.forEach(doc => {
-            map[doc.id] = doc.data().username || doc.data().email;
-          });
-          setUsersMap(map);
-        } catch (err) {
-          console.error("Failed to fetch users map", err);
-        }
-      } else {
-        setMaterials([]);
-        setCurrentMaterialId(null);
-        setIsAdmin(false);
-        setUsersMap({});
+    const savedToken = localStorage.getItem('echomaster_token');
+    const savedUser = localStorage.getItem('echomaster_user');
+    if (savedToken && savedUser) {
+      try {
+        const u = JSON.parse(savedUser);
+        setToken(savedToken);
+        setUser(u);
+        setIsAdmin(u.role === 'admin');
+        fetchInitialData();
+      } catch (err) {
+        localStorage.removeItem('echomaster_token');
+        localStorage.removeItem('echomaster_user');
       }
-    });
-    return unsubscribe;
+    }
   }, []);
+
+  const fetchInitialData = async () => {
+    try {
+      const [mats, uMap] = await Promise.all([
+        api.get('/api/materials'),
+        api.get('/api/users/map')
+      ]);
+      setMaterials(mats);
+      setUsersMap(uMap);
+    } catch (err) {
+      console.error("Failed to fetch initial data", err);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      const interval = setInterval(fetchInitialData, 5000); // 校园网环境下，每5秒轮询一次同步公共库
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [newUserName, setNewUserName] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [isCreatingUser, setIsCreatingUser] = useState(false);
-  const [editingUserUid, setEditingUserUid] = useState<string | null>(null);
-  const [editingUserValue, setEditingUserValue] = useState('');
-
-  // Special One-time Cleanup for 'jerry' user as requested
-  useEffect(() => {
-    if (!isAdmin || !user) return;
-    
-    const cleanupJerry = async () => {
-      try {
-        const usersSnap = await getDocs(collection(db, 'users'));
-        let targetUid = '';
-        usersSnap.forEach(d => {
-          if (d.data().username?.toLowerCase() === 'jerry') {
-            targetUid = d.id;
-          }
-        });
-
-        if (targetUid) {
-          console.log("Cleanup: Found jerry user with UID", targetUid);
-          // Delete all materials
-          const mSnap = await getDocs(query(collection(db, 'materials'), where('ownerId', '==', targetUid)));
-          const mDeletes = mSnap.docs.map(d => deleteDoc(d.ref));
-          await Promise.all(mDeletes);
-          
-          // Delete user and admin
-          await deleteDoc(doc(db, 'users', targetUid));
-          await deleteDoc(doc(db, 'admins', targetUid));
-          console.log("Cleanup: Success");
-        }
-      } catch (err) {
-        console.error("Cleanup Error", err);
-      }
-    };
-    cleanupJerry();
-  }, [isAdmin, user]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     setIsLoggingIn(true);
     
-    const username = authUsername.trim();
-    const internalEmail = `${username.toLowerCase()}@echomaster.local`;
-
     try {
-      // 1. Attempt login first
-      try {
-        await signInWithEmailAndPassword(auth, internalEmail, authPassword);
-      } catch (err: any) {
-        // 2. Special Bootstrap Logic: If login fails and it's the designated admin account
-        if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-          if ((username === 'admin' && authPassword === 'sdeducation') || (username === 'jerrylee086' && authPassword === 'sdeducation')) {
-            // Try to register as the first admin
-            try {
-              const res = await createUserWithEmailAndPassword(auth, internalEmail, authPassword);
-              await setDoc(doc(db, 'users', res.user.uid), {
-                username: username,
-                email: internalEmail,
-                createdAt: serverTimestamp(),
-                role: 'admin'
-              });
-              await setDoc(doc(db, 'admins', res.user.uid), { assignedAt: serverTimestamp() });
-              setIsAdmin(true);
-              setShowAuthOverlay(false);
-              return;
-            } catch (regErr: any) {
-              // If registration fails with "already in use", someone already is admin
-              if (regErr.code === 'auth/email-already-in-use') {
-                setAuthError('用户名或密码错误。');
-                return;
-              }
-              throw regErr;
-            }
-          }
-        }
-        throw err;
-      }
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUsername, password: authPassword })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Login failed');
+
+      localStorage.setItem('echomaster_token', data.token);
+      localStorage.setItem('echomaster_user', JSON.stringify(data.user));
+      
+      setToken(data.token);
+      setUser(data.user);
+      setIsAdmin(data.user.role === 'admin');
+      setShowAuthOverlay(false);
+      fetchInitialData();
     } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-        setAuthError('用户名或密码错误');
-      } else if (err.code === 'auth/operation-not-allowed') {
-        setAuthError('错误：请在 Firebase 控制台启用 "Email/Password" 登录。');
-      } else {
-        setAuthError(err.message);
-      }
+      setAuthError(err.message);
     } finally {
       setIsLoggingIn(false);
     }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('echomaster_token');
+    localStorage.removeItem('echomaster_user');
+    setUser(null);
+    setToken(null);
+    setIsAdmin(false);
+    setMaterials([]);
+    setMode('setup');
   };
 
   const createInternalUser = async (e: React.FormEvent) => {
@@ -234,225 +192,109 @@ export default function App() {
     if (!isAdmin || !user) return;
     setIsCreatingUser(true);
     setAdminError('');
-
-    const targetEmail = `${newUserName.toLowerCase().trim()}@echomaster.local`;
     
     try {
-      // Use secondary auth instance to create the user without affecting current login
-      const secondaryAuth = getSecondaryAuth();
-      const res = await createUserWithEmailAndPassword(secondaryAuth, targetEmail, newUserPassword);
-      
-      if (res.user) {
-        await setDoc(doc(db, 'users', res.user.uid), {
-          username: newUserName.trim(),
-          email: targetEmail,
-          createdAt: serverTimestamp(),
-          role: 'user'
-        });
-        
-        // Wait briefly for firestore sync, then sign out secondary user 
-        // to keep the environment clean for the next creation
-        await secondaryAuth.signOut();
-      }
-      
-      alert(`用户 ${newUserName} 创建成功！可以使用该账号直接登录。`);
-      setNewUserName('');
-      setNewUserPassword('');
+      alert(`在本地模式下，由于不依赖外部验证，您可以直接让学生使用指定的用户名登录，系统会自动处理开户。`);
       setShowAdminPanel(false);
     } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/email-already-in-use') {
-        setAdminError('该用户名已存在');
-      } else {
-        setAdminError(err.message);
-      }
+      setAdminError(err.message);
     } finally {
       setIsCreatingUser(false);
     }
   };
 
-  // Sync Materials from Firestore
-  useEffect(() => {
-    if (!user) return;
-    
-    // Everyone sees everything to allow a shared library
-    const q = query(
-      collection(db, 'materials'),
-      orderBy('updatedAt', 'desc')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      } as ListeningMaterial & { id: string }));
-      setMaterials(docs);
-    });
-    return unsubscribe;
-  }, [user]);
-
-  // Load selected material
-  const selectMaterial = (m: ListeningMaterial & { id: string }) => {
-    setMaterial(m);
-    setCurrentMaterialId(m.id);
-    setCurrentTime(0);
-    setIsPlaying(false);
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.pause();
-    }
-    setMode('train');
-  };
-
-  // Create new material
-  const createNewMaterial = () => {
-    setMaterial({
-      title: '未命名听力材料',
-      audioUrl: '',
-      script: '',
-      segments: [],
-    });
-    setCurrentMaterialId(null);
-    setMode('setup');
-  };
-
-  // Persistence: Load from localStorage on mount (as fallback for guest)
-  useEffect(() => {
-    if (user) return;
-    const saved = localStorage.getItem('echomaster_material');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Do not load blob URLs as they are session-specific and invalid after reload
-        if (parsed.audioUrl && parsed.audioUrl.startsWith('blob:')) {
-          parsed.audioUrl = '';
-        }
-        setMaterial(parsed);
-      } catch (e) {
-        console.error("Persistence Load Error", e);
-      }
-    }
-  }, [user]);
-
-  // Cloud Sync: Save function
-  // Persistence: Save to local
-  const manualSaveLocal = () => {
+  const renameMaterial = async (id: string, newTitle: string) => {
+    if (!newTitle || !newTitle.trim()) return;
     try {
-      const sanitizedMaterial = {
-        title: material.title,
-        audioUrl: material.audioUrl.startsWith('blob:') ? '' : material.audioUrl,
-        script: material.script,
-        segments: material.segments.map(s => ({
-          id: s.id,
-          label: s.label,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          subtitle: s.subtitle || ''
-        }))
-      };
-      localStorage.setItem('echomaster_material', JSON.stringify(sanitizedMaterial));
-      setLastSaved(new Date().toLocaleTimeString());
-    } catch (e) {
-      console.error("LocalStorage Save Error");
+      const original = materials.find(m => m.id === id);
+      if (!original) return;
+
+      await api.post(`/api/materials`, {
+        ...original,
+        title: newTitle.trim(),
+        id: id
+      });
+      fetchInitialData();
+    } catch (err) {
+      console.error("Rename failed", err);
+      alert("重命名失败");
     }
   };
 
-  // Cloud Sync: Save function
-  const manualSave = async () => {
+  // Cloud Sync: Save function (Now hits local API)
+  const saveToCloud = async () => {
     if (!user) {
-      manualSaveLocal();
+      setShowAuthOverlay(true);
       return;
     }
-
+    
     setIsSyncing(true);
     try {
-      // 1. Sanitize material data to exclude internal fields like 'id' from the document body
-      // Ensure segments are clean and have all necessary fields
-      const sanitizedSegments = material.segments.map(seg => ({
-        id: seg.id,
-        label: seg.label,
-        startTime: seg.startTime,
-        endTime: seg.endTime,
-        subtitle: seg.subtitle || ''
-      }));
-
-      const dataToSave = {
-        title: material.title || '未命名听力材料',
-        // Audio is not synced to cloud per user request
-        audioUrl: '', 
-        script: material.script || '',
-        segments: sanitizedSegments,
-        updatedAt: serverTimestamp()
-      };
-
-      if (currentMaterialId) {
-        const ref = doc(db, 'materials', currentMaterialId);
-        await updateDoc(ref, dataToSave);
-      } else {
-        const ref = await addDoc(collection(db, 'materials'), {
-          ...dataToSave,
-          ownerId: user.uid,
-          createdAt: serverTimestamp(),
-        });
-        setCurrentMaterialId(ref.id);
-        // Also update local material object to match
-        setMaterial(prev => ({ ...prev })); 
-      }
+      const id = currentMaterialId || Math.random().toString(36).substr(2, 9);
+      await api.post('/api/materials', {
+        ...material,
+        id,
+      });
+      
+      setCurrentMaterialId(id);
       setLastSaved(new Date().toLocaleTimeString());
-    } catch (e) {
-      console.error("Save Error", e);
-      alert("保存失败：权限不足或网络异常");
+      fetchInitialData();
+    } catch (err) {
+      console.error("Save Error", err);
+      alert("保存失败，请检查网络连接（校园网专用模式）。");
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // Auto-save debounced
+  const deleteUser = async (id: string, name: string) => {
+    if (!window.confirm(`⚠️ 重要：确定要彻底注销用户 [${name}] 吗？\n由于本地校园网模式安全限制，注销用户需要由系统管理员在服务器端操作数据库。在此处点击仅为确认意图。`)) return;
+    alert("该功能在本地模式下已被物理隔离，请联系机房老师手动清理 database.sqlite 文件。");
+  };
+
+  const deleteMaterial = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm('确定要从公共库中彻底删除这个听力材料吗？此操作无法撤销。')) return;
+    
+    try {
+      await api.delete(`/api/materials/${id}`);
+      fetchInitialData();
+      if (currentMaterialId === id) {
+        setMode('gallery');
+        setCurrentMaterialId(null);
+        setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
+      }
+    } catch (err) {
+      alert("只有上传者或管理员可以删除该材料。");
+    }
+  };
+
+  const selectMaterial = (m: any) => {
+    setMaterial(m);
+    setCurrentMaterialId(m.id);
+    setMode('train');
+    if (audioRef.current) audioRef.current.currentTime = 0;
+  };
+
+  const createNewMaterial = () => {
+    setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
+    setCurrentMaterialId(null);
+    setMode('setup');
+    setSetupOption('new');
+  };
+
+  // Auto-save debounced (Local API version)
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (!user) {
-        if (material.audioUrl || material.script || material.segments.length > 0) {
-          const sanitizedMaterial = {
-            title: material.title,
-            audioUrl: material.audioUrl.startsWith('blob:') ? '' : material.audioUrl,
-            script: material.script,
-            segments: material.segments.map(s => ({
-              id: s.id,
-              label: s.label,
-              startTime: s.startTime,
-              endTime: s.endTime,
-              subtitle: s.subtitle || ''
-            }))
-          };
-          localStorage.setItem('echomaster_material', JSON.stringify(sanitizedMaterial));
-        }
-      } else if (currentMaterialId) {
-        // Auto-update in cloud if we have an ID
-        const sanitizedSegments = material.segments.map(seg => ({
-          id: seg.id,
-          label: seg.label,
-          startTime: seg.startTime,
-          endTime: seg.endTime,
-          subtitle: seg.subtitle || ''
-        }));
-
-        const dataToSave = {
-          title: material.title || '未命名听力材料',
-          // Audio is not synced to cloud
-          audioUrl: '', 
-          script: material.script || '',
-          segments: sanitizedSegments,
-          updatedAt: serverTimestamp()
-        };
-
-        const ref = doc(db, 'materials', currentMaterialId);
-        updateDoc(ref, dataToSave).catch(e => {
-          if (e.code !== 'permission-denied') {
-            console.error("Auto Sync Error", e);
-          }
+      if (user && currentMaterialId) {
+        api.post('/api/materials', {
+          ...material,
+          id: currentMaterialId
+        }).catch(err => {
+          console.error("Auto Sync Error", err);
         });
       }
-    }, 2000);
+    }, 5000);
     return () => clearTimeout(timer);
   }, [material, user, currentMaterialId]);
 
@@ -590,98 +432,92 @@ export default function App() {
     return `${Math.floor(time)}s`;
   };
 
-  // Helper to render script with highlighting
-  const renderTranscript = (onlyActive: boolean = false) => {
-    let items = material.segments.map((seg, idx) => ({
-      index: idx,
-      text: seg.subtitle || '',
-      startTime: seg.startTime,
-      endTime: seg.endTime
-    }));
+    // Helper to render script with highlighting
+    const renderTranscript = (onlyActive: boolean = false) => {
+      let items = material.segments.map((seg, idx) => ({
+        index: idx,
+        text: seg.subtitle || '',
+        startTime: seg.startTime,
+        endTime: seg.endTime
+      }));
 
-    if (onlyActive && activeSegmentIndex !== null) {
-      items = [items[activeSegmentIndex]];
-    }
+      if (onlyActive && activeSegmentIndex !== null) {
+        items = [items[activeSegmentIndex]];
+      }
 
-    if (items.length === 0 || (onlyActive && activeSegmentIndex === null)) {
+      if (items.length === 0 || (onlyActive && activeSegmentIndex === null)) {
+        return (
+          <div className="flex flex-col items-center justify-center h-full text-slate-600 italic py-10 opacity-40">
+            <BookOpen size={48} className="mb-4" />
+            <p>{onlyActive ? "点击左侧题目预览听力脚本" : "暂无分段内容"}</p>
+          </div>
+        );
+      }
+      
       return (
-        <div className="flex flex-col items-center justify-center h-full text-slate-600 italic py-10 opacity-40">
-          <BookOpen size={48} className="mb-4" />
-          <p>{onlyActive ? "点击播放题目查看内容" : "暂无分段内容"}</p>
+        <div className={cn("flex flex-col w-full", onlyActive ? "gap-6" : "gap-16 py-10")}>
+          {items.map((item, idx) => {
+            const isActive = onlyActive ? true : item.index === activeSegmentIndex;
+            const lines = item.text.split('\n');
+            const duration = item.endTime - item.startTime;
+            const totalWords = item.text.split(/\s+/).filter(Boolean).length;
+            let currentWordGlobalIdx = 0;
+
+            return (
+              <motion.div 
+                key={item.index}
+                data-segment-index={item.index}
+                initial={false}
+                animate={{ 
+                  opacity: showSubtitles ? (isActive ? 1 : 0.2) : 0,
+                  scale: isActive ? 1 : 0.98,
+                }}
+                className={cn(
+                  "w-full text-left transition-all duration-500 whitespace-pre-wrap",
+                  isActive ? "text-white" : "text-slate-500"
+                )}
+              >
+                {lines.map((line, lIdx) => {
+                  const words = line.split(/(\s+)/);
+                  return (
+                    <div key={lIdx} className="flex flex-wrap items-center leading-[4.5rem] mb-6">
+                      {words.map((word, wIdx) => {
+                        if (word.trim() === '') return <span key={wIdx} className="w-2"></span>;
+                        
+                        const wordIdxInLine = currentWordGlobalIdx++;
+                        let isWordActive = false;
+                        if (isActive && duration > 0 && totalWords > 0) {
+                          const elapsed = currentTime - item.startTime;
+                          const wordProgress = (elapsed / duration) * totalWords;
+                          isWordActive = wordIdxInLine <= wordProgress;
+                        }
+
+                        return (
+                          <motion.span
+                            key={wIdx}
+                            initial={false}
+                            animate={{
+                              color: isActive && isWordActive ? '#60a5fa' : 'inherit',
+                              y: isActive && isWordActive ? -2 : 0,
+                            }}
+                            className={cn(
+                              "text-4xl md:text-6xl font-bold tracking-[0.05em] px-1 transition-all rounded",
+                              isActive && isWordActive ? "bg-blue-500/10 shadow-[0_4px_12px_rgba(37,99,235,0.2)]" : ""
+                            )}
+                          >
+                            {word}
+                          </motion.span>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </motion.div>
+            );
+          })}
         </div>
       );
-    }
-    
-    return (
-      <div className={cn("flex flex-col w-full", onlyActive ? "gap-4" : "gap-12 py-10")}>
-        {items.map((item, idx) => {
-          const isActive = onlyActive ? true : item.index === activeSegmentIndex;
-          // Preserve line breaks by splitting by newline first
-          const lines = item.text.split('\n');
-          const duration = item.endTime - item.startTime;
-          
-          // Calculate cumulative word count for highlighting across lines if needed
-          // But for simplicity, we can just highlight based on time relative to this segment
-          const totalWords = item.text.split(/\s+/).filter(Boolean).length;
-          let currentWordGlobalIdx = 0;
-
-          return (
-            <motion.div 
-              key={item.index}
-              data-segment-index={item.index}
-              initial={false}
-              animate={{ 
-                opacity: showSubtitles ? (isActive ? 1 : 0.3) : 0,
-                x: isActive ? 4 : 0,
-              }}
-              transition={{ type: 'spring', stiffness: 200, damping: 25 }}
-              className={cn(
-                "w-full text-left transition-all duration-500 whitespace-pre-wrap",
-                onlyActive ? "px-0" : "px-0 py-2",
-                isActive ? "text-white" : "text-slate-500"
-              )}
-            >
-              {lines.map((line, lIdx) => {
-                const words = line.split(/(\s+)/); // Keep the spaces to maintain formatting
-                return (
-                  <div key={lIdx} className="flex flex-wrap">
-                    {words.map((word, wIdx) => {
-                      if (word.trim() === '') return <span key={wIdx}>{word}</span>;
-                      
-                      const wordIdxInLine = currentWordGlobalIdx++;
-                      let isWordActive = false;
-                      if (isActive && duration > 0 && totalWords > 0) {
-                        const elapsed = currentTime - item.startTime;
-                        const wordProgress = (elapsed / duration) * totalWords;
-                        isWordActive = wordIdxInLine <= wordProgress;
-                      }
-
-                      return (
-                        <motion.span
-                          key={wIdx}
-                          initial={false}
-                          animate={{
-                            color: isActive && isWordActive ? '#60a5fa' : 'inherit',
-                            scale: isActive && isWordActive ? 1.05 : 1,
-                          }}
-                          className={cn(
-                            "text-base md:text-lg font-medium inline-block",
-                            isActive && isWordActive ? "font-bold" : ""
-                          )}
-                        >
-                          {word}
-                        </motion.span>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </motion.div>
-          );
-        })}
-      </div>
-    );
-  };
+    };
 
   const [galleryUserFilter, setGalleryUserFilter] = useState<string>('all');
 
@@ -758,13 +594,13 @@ export default function App() {
 
             {lastSaved && (
               <span className="text-[10px] font-bold text-green-500 uppercase tracking-tighter opacity-70 hidden md:inline">
-                {lastSaved} {isSyncing ? "同步中..." : "已保存"}
+                {lastSaved} {isSyncing ? "同步中..." : "已完成"}
               </span>
             )}
             <button 
-              onClick={manualSave}
+              onClick={saveToCloud}
               className="btn-glass p-2.5 rounded-xl text-blue-400 hover:text-white transition-all group"
-              title="保存到云端"
+              title="保存到本地数据库"
             >
               <Save size={18} className={cn("group-active:scale-95", isSyncing && "animate-pulse")} />
             </button>
@@ -783,7 +619,7 @@ export default function App() {
                <div className="flex items-center gap-3 pl-2 border-l border-white/5">
                  <div className="flex flex-col items-end">
                    <div className="flex items-center gap-2">
-                     <span className="text-xs font-bold text-white tracking-tight">{usersMap[user.uid] || user.displayName || '用户'}</span>
+                     <span className="text-xs font-bold text-white tracking-tight">{usersMap[user.id] || user.displayName || '用户'}</span>
                      {isAdmin && <ShieldCheck size={14} className="text-yellow-500" />}
                    </div>
                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{isAdmin ? '管理员' : '普通用户'}</span>
@@ -791,7 +627,7 @@ export default function App() {
                  <div className="w-8 h-8 rounded-full bg-blue-600/20 flex items-center justify-center text-blue-400 border border-white/10 shrink-0">
                    <UserIcon size={16} />
                  </div>
-                 <button onClick={() => signOut()} className="text-slate-500 hover:text-red-400 transition-colors">
+                 <button onClick={logout} className="text-slate-500 hover:text-red-400 transition-colors">
                    <LogOut size={18} />
                  </button>
                </div>
@@ -941,82 +777,30 @@ export default function App() {
                     <div className="space-y-3">
                       {Object.entries(usersMap).map(([uid, name]) => (
                         <div key={uid} className="flex items-center justify-between p-3 bg-white/5 rounded-2xl border border-white/5 group">
-                          {editingUserUid === uid ? (
-                            <div className="flex items-center gap-2 w-full">
-                              <input 
-                                autoFocus
-                                value={editingUserValue}
-                                onChange={(e) => setEditingUserValue(e.target.value)}
-                                onKeyDown={async (e) => {
-                                  if (e.key === 'Enter' && editingUserValue.trim()) {
-                                    try {
-                                      await updateDoc(doc(db, 'users', uid), { username: editingUserValue.trim() });
-                                      setUsersMap(prev => ({ ...prev, [uid]: editingUserValue.trim() }));
-                                      setEditingUserUid(null);
-                                    } catch (err) {
-                                      alert("更新失败");
-                                    }
-                                  }
-                                }}
-                                className="bg-slate-800 border-none rounded-lg px-3 py-1 text-sm text-white w-full"
-                              />
-                              <button onClick={() => setEditingUserUid(null)} className="text-xs text-slate-500 p-1">取消</button>
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                              {name.charAt(0).toUpperCase()}
                             </div>
-                          ) : (
-                            <>
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-500">
-                                  {name.charAt(0).toUpperCase()}
-                                </div>
-                                <span className="text-sm font-bold text-slate-300">{name}</span>
-                              </div>
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                <button 
-                                  onClick={() => {
-                                    setEditingUserUid(uid);
-                                    setEditingUserValue(name);
-                                  }}
-                                  className="p-2 text-slate-500 hover:text-blue-400"
-                                  title="修改用户名"
-                                >
-                                  <Edit3 size={14} />
-                                </button>
-                                <button 
-                                  onClick={async () => {
-                                    if (confirm(`⚠️ 极其重要：确定要彻底删除用户 [${name}] 及其名下的【所有】听力材料文件夹吗？此操作不可恢复！`)) {
-                                      try {
-                                        // 1. Delete all materials owned by this user
-                                        const q = query(collection(db, 'materials'), where('ownerId', '==', uid));
-                                        const querySnapshot = await getDocs(q);
-                                        const deletePromises = querySnapshot.docs.map(d => deleteDoc(d.ref));
-                                        await Promise.all(deletePromises);
-
-                                        // 2. Delete user doc
-                                        await deleteDoc(doc(db, 'users', uid));
-                                        
-                                        // 3. Delete admin status
-                                        await deleteDoc(doc(db, 'admins', uid));
-
-                                        setUsersMap(prev => {
-                                          const next = { ...prev };
-                                          delete next[uid];
-                                          return next;
-                                        });
-                                        alert(`用户 ${name} 及其所有内容已清除`);
-                                      } catch (err) {
-                                        alert("一键删除失败，请检查网络或权限");
-                                        console.error(err);
-                                      }
-                                    }
-                                  }}
-                                  className="p-2 text-red-500/50 hover:text-red-500"
-                                  title="一键彻底注销(删人+删内容)"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </>
-                          )}
+                            <span className="text-sm font-bold text-slate-300">{name}</span>
+                          </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                             <button 
+                               onClick={() => {
+                                 alert("本地模式下请通过数据库管理工具修改用户名。");
+                               }}
+                               className="p-2 text-slate-500 hover:text-blue-400"
+                               title="修改用户名"
+                             >
+                               <Edit3 size={14} />
+                             </button>
+                             <button 
+                               onClick={() => deleteUser(uid, name)}
+                               className="p-2 text-red-500/50 hover:text-red-500"
+                               title="一键彻底注销(删人+删内容)"
+                             >
+                               <Trash2 size={14} />
+                             </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1084,30 +868,24 @@ export default function App() {
                         {m.ownerId && (
                           <div className={cn(
                             "absolute top-0 right-0 px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-bl-xl border-l border-b transition-all",
-                            user && m.ownerId === user.uid 
+                            user && m.ownerId === user.id 
                               ? "bg-green-500/10 text-green-400 border-green-500/20" 
                               : "bg-blue-500/10 text-blue-400 border-blue-500/20"
                           )}>
-                            {user && m.ownerId === user.uid ? "我的材料" : `来自: ${ownerName}`}
+                            {user && m.ownerId === user.id ? "我的材料" : `来自: ${ownerName}`}
                           </div>
                         )}
 
                         <div>
                           <div className="flex items-start justify-between">
                             <h3 className="font-bold text-white text-lg line-clamp-2 pr-4">{m.title}</h3>
-                               {(isAdmin || (user && m.ownerId === user.uid)) && (
+                               {(isAdmin || (user && m.ownerId === user.id)) && (
                                  <div className="flex items-center gap-1">
                                   <button 
-                                    onClick={async (e) => {
+                                    onClick={(e) => {
                                       e.stopPropagation();
                                       const newTitle = prompt("重命名材料库:", m.title);
-                                      if (newTitle && newTitle.trim() && newTitle !== m.title) {
-                                        try {
-                                          await updateDoc(doc(db, 'materials', m.id), { title: newTitle.trim() });
-                                        } catch (err) {
-                                          alert("重命名失败");
-                                        }
-                                      }
+                                      if (newTitle) renameMaterial(m.id, newTitle);
                                     }}
                                     className="p-2 text-slate-500 hover:text-blue-400 transition-colors bg-white/5 rounded-xl border border-white/10 hover:border-blue-500/30 z-10 shrink-0"
                                     title="重命名"
@@ -1115,17 +893,7 @@ export default function App() {
                                     <Edit3 size={16} />
                                   </button>
                                   <button 
-                                    onClick={async (e) => {
-                                      e.stopPropagation();
-                                      if (confirm(`确定要彻底删除 [${m.title}] 文件夹及其所有配置吗？`)) {
-                                        try {
-                                          await deleteDoc(doc(db, 'materials', m.id));
-                                        } catch (err: any) {
-                                          console.error("Delete failed", err);
-                                          alert("删除失败：" + (err.message || '权限不足'));
-                                        }
-                                      }
-                                    }}
+                                    onClick={(e) => deleteMaterial(m.id, e)}
                                     className="p-2 text-white hover:text-red-500 transition-colors bg-red-500/20 rounded-xl border border-red-500/30 hover:border-red-500/50 z-10 shrink-0"
                                     title="彻底删除"
                                   >
@@ -1363,21 +1131,9 @@ export default function App() {
                       {currentMaterialId ? '修改配置/分段' : '下一步：配置分段'} <ArrowRight size={20} />
                     </button>
 
-                    {(isAdmin || (user && material.ownerId === user.uid)) && currentMaterialId && (
+                    {(isAdmin || (user && material.ownerId === user.id)) && currentMaterialId && (
                       <button 
-                        onClick={async () => {
-                          if (confirm('确定要【彻底删除】此材料库文件吗？')) {
-                            try {
-                              await deleteDoc(doc(db, 'materials', currentMaterialId));
-                              setMode('gallery');
-                              setCurrentMaterialId(null);
-                              setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
-                            } catch (err) {
-                              console.error("Delete failed", err);
-                              alert("删除失败。");
-                            }
-                          }
-                        }}
+                        onClick={(e) => deleteMaterial(currentMaterialId, e)}
                         className="w-full h-12 text-red-500 hover:text-white text-sm font-bold transition-all flex items-center justify-center gap-2 bg-red-500/5 hover:bg-red-600 rounded-2xl border border-red-500/10 shadow-lg shadow-red-500/10"
                       >
                         <Trash2 size={18} /> 彻底删除此材料库
@@ -1709,21 +1465,9 @@ export default function App() {
                           className="text-3xl font-black tracking-tighter text-white leading-tight bg-transparent border-none focus:outline-none focus:ring-0 p-0 flex-1 min-w-0"
                           placeholder="输入听力材料标题..."
                         />
-                        {(isAdmin || (user && material.ownerId === user.uid)) && currentMaterialId && (
+                        {(isAdmin || (user && material.ownerId === user.id)) && currentMaterialId && (
                            <button 
-                             onClick={async () => {
-                               if (confirm('确定要【彻底删除】此整个材料库文件及所有配置吗？')) {
-                                 try {
-                                   await deleteDoc(doc(db, 'materials', currentMaterialId));
-                                   setMode('gallery');
-                                   setCurrentMaterialId(null);
-                                   setMaterial({ title: '未命名听力材料', audioUrl: '', script: '', segments: [] });
-                                 } catch (err) {
-                                   console.error("Delete failed", err);
-                                   alert("删除失败，请检查网络或权限。");
-                                 }
-                               }
-                             }}
+                             onClick={(e) => deleteMaterial(currentMaterialId, e)}
                              className="p-2 text-red-500/50 hover:text-red-500 transition-colors bg-red-500/5 rounded-xl border border-red-500/10 shrink-0"
                              title="彻底删除整库"
                            >

@@ -11,8 +11,9 @@ ADMIN_PASS = os.environ.get('ADMIN_PASSWORD', 'sdeducation')
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    username = date.get('username')
-    password = date.get('password')
+    username = data.get('username')
+    password = data.get('password')
+    
     # 简单的逻辑：jerry 是老师，sdeducation 是默认密码
     if username == 'jerry' and password == ADMIN_PASS:
         return jsonify({

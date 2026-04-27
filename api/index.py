@@ -3,81 +3,85 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-# 开启跨域支持，确保不同域名的前端也能访问
+# 开启跨域支持，确保您的听力系统子域名能正常访问后端
 CORS(app)
 
 # =========================================================
-# 1. 用户名单管理中心 (在这里手动维护账号)
-# 角色说明: 'admin' 拥有管理权限, 'user' 仅能练习
+# 【用户名单管理中心】
+# 老师，您以后只需要在这里增删学生即可。
+# 格式说明: "账号": {"password": "密码", "role": "用户角色", "name": "显示姓名"}
 # =========================================================
 USERS = {
+    # --- 管理员账号 ---
     "jerry": {
-        "password": os.environ.get('ADMIN_PASSWORD', 'sdeducation'),
-        "role": "admin",
+        "password": os.environ.get('ADMIN_PASSWORD', 'sdeducation'), 
+        "role": "admin", 
         "name": "超级管理员"
     },
     "admin": {
-        "password": "admin123",
-        "role": "admin",
-        "name": "老师助手"
+        "password": "admin123", 
+        "role": "admin", 
+        "name": "管理员老师"
     },
-    "teacher01": {
-        "password": "password888",
-        "role": "user",
-        "name": "教师张三"
-    }
+
+    # --- 学生名单开始 (您可以参考格式自由增加) ---
+    "2023001": {"password": "123456", "role": "user", "name": "梁冰"},
+    "2023002": {"password": "123456", "role": "user", "name": "李琼英"},
+    "2024001": {"password": "123456", "role": "user", "name": "唐思莲"},
+    "2024002": {"password": "123456", "role": "user", "name": "于希平"},
+    "2024003": {"password": "123456", "role": "user", "name": "涂瀚月"},
+    "2024004": {"password": "123456", "role": "user", "name": "张璐"},
+    "2025001": {"password": "123456", "role": "user", "name": "贾丽娟"},
+    "2025002": {"password": "123456", "role": "user", "name": "徐敬平"},
+    # -------------------------------------------------------
 }
 
 # =========================================================
-# 2. 路由定义
+# 【系统核心逻辑】(建议非必要不修改)
 # =========================================================
 
-# 健康检查接口
 @app.route('/api/health', methods=['GET'])
 def health():
+    """健康检查接口，用于测试后端是否通畅"""
     return jsonify({
         "status": "ok", 
         "service": "EchoMaster API",
-        "environment": "Vercel Serverless"
+        "user_count": len(USERS)
     })
 
-# 登录接口
 @app.route('/api/login', methods=['POST'])
 def login():
+    """统一登录验证接口"""
     try:
-        # 获取前端传来的 JSON 数据
         data = request.get_json()
         if not data:
-            return jsonify({"status": "fail", "message": "无效的请求格式"}), 400
+            return jsonify({"status": "fail", "message": "请求格式错误"}), 400
             
         username = data.get('username', '').strip()
         password = data.get('password', '')
 
-        # 核心验证逻辑
+        # 检查账号是否存在于 USERS 字典中
         if username in USERS:
-            user_record = USERS[username]
-            if user_record["password"] == password:
-                # 登录成功，返回用户信息给前端
+            user_data = USERS[username]
+            # 校验密码
+            if user_data["password"] == password:
                 return jsonify({
                     "status": "success",
-                    "token": "secure_token_" + os.urandom(8).hex(), # 简单生成一个随机 Token
                     "user": {
                         "id": username,
                         "username": username,
-                        "role": user_record["role"],
-                        "displayName": user_record["name"]
+                        "role": user_data["role"],
+                        "displayName": user_data["name"]
                     }
                 }), 200
         
-        # 验证失败
+        # 账号不存在或密码错误
         return jsonify({"status": "fail", "message": "用户名或密码错误"}), 401
         
     except Exception as e:
-        # 捕获潜在错误，防止程序崩溃返回 HTML
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # 捕捉异常，避免返回 HTML 错误页面导致前端解析 JSON 失败
+        return jsonify({"status": "error", "message": "服务器内部错误"}), 500
 
-# =========================================================
-# 3. Vercel 适配层
-# =========================================================
+# Vercel Serverless 环境必须的 handler
 def handler(event, context):
     return app(event, context)
